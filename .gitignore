@@ -3,6 +3,7 @@
 *.iml
 .DS_Store
 Thumbs.db
+.codex/
 
 # Build outputs
 build/

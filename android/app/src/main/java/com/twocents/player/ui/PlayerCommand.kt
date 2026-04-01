@@ -7,7 +7,8 @@ sealed interface PlayerCommand {
 
     data class LoadTrack(
         override val id: Long,
-        val track: Track,
+        val queue: List<Track>,
+        val index: Int,
         val playWhenReady: Boolean,
         val startPositionMs: Long = 0L,
     ) : PlayerCommand

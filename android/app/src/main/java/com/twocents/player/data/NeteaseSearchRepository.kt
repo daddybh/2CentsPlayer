@@ -102,9 +102,36 @@ class NeteaseSearchRepository(
         )
     }
 
+    fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
+        if (tracks.isEmpty()) return emptyList()
+
+        val trackIds = tracks.map { it.id }.filter { it.isNotBlank() }
+        if (trackIds.isEmpty()) return tracks
+
+        val playbackDetailsById = resolvePlaybackDetails(trackIds)
+        return tracks.map { track ->
+            val playbackDetails = playbackDetailsById[track.id]
+            if (track.audioUrl.isNotBlank() || playbackDetails == null) {
+                track
+            } else {
+                track.copy(
+                    audioUrl = playbackDetails.audioUrl,
+                    durationMs = if (track.durationMs > 0) track.durationMs else playbackDetails.durationMs,
+                )
+            }
+        }
+    }
+
     private fun resolvePlaybackDetails(trackId: String): PlaybackDetails? {
+        return resolvePlaybackDetails(listOf(trackId))[trackId]
+    }
+
+    private fun resolvePlaybackDetails(trackIds: List<String>): Map<String, PlaybackDetails> {
+        if (trackIds.isEmpty()) return emptyMap()
+
+        val joinedIds = trackIds.joinToString(separator = ",")
         val request = Request.Builder()
-            .url("https://music.163.com/api/song/enhance/player/url?id=$trackId&ids=%5B$trackId%5D&br=320000")
+            .url("https://music.163.com/api/song/enhance/player/url?id=${trackIds.first()}&ids=%5B$joinedIds%5D&br=320000")
             .addHeader("User-Agent", NETEASE_WEB_USER_AGENT)
             .addHeader("Referer", "https://music.163.com/")
             .addHeader("Origin", "https://music.163.com")
@@ -118,18 +145,27 @@ class NeteaseSearchRepository(
             }
 
             val body = response.body?.string().orEmpty()
-            if (body.isBlank()) return null
+            if (body.isBlank()) return emptyMap()
 
             val root = JSONObject(body)
-            val data = root.optJSONArray("data") ?: return null
-            val firstItem = data.optJSONObject(0) ?: return null
-            val resolvedUrl = firstItem.optString("url").orEmpty()
-            if (resolvedUrl.isBlank()) return null
+            val data = root.optJSONArray("data") ?: return emptyMap()
 
-            return PlaybackDetails(
-                audioUrl = resolvedUrl.replace("http://", "https://"),
-                durationMs = firstItem.optLong("time"),
-            )
+            return buildMap(data.length()) {
+                for (index in 0 until data.length()) {
+                    val item = data.optJSONObject(index) ?: continue
+                    val resolvedTrackId = item.opt("id")?.toString().orEmpty()
+                    val resolvedUrl = item.optString("url").orEmpty()
+                    if (resolvedTrackId.isBlank() || resolvedUrl.isBlank()) continue
+
+                    put(
+                        resolvedTrackId,
+                        PlaybackDetails(
+                            audioUrl = resolvedUrl.replace("http://", "https://"),
+                            durationMs = item.optLong("time"),
+                        ),
+                    )
+                }
+            }
         }
     }
 

@@ -273,12 +273,41 @@ class PlayerViewModel(
         )
     }
 
-    fun onTrackEnded() {
-        if (playbackState.playlist.isEmpty()) {
-            playbackState = playbackState.copy(isPlaying = false)
+    fun onPlayerQueueChanged(
+        queue: List<Track>,
+        currentIndex: Int,
+        positionMs: Long,
+        durationMs: Long,
+        isPlaying: Boolean,
+    ) {
+        if (queue.isEmpty()) {
+            playbackState = playbackState.copy(
+                isPlaying = false,
+                isPreparing = false,
+                currentPositionMs = positionMs.coerceAtLeast(0L),
+            )
             return
         }
-        skipNext()
+
+        val normalizedQueue = queue.map(::normalizeTrack)
+        val safeIndex = currentIndex.coerceIn(0, normalizedQueue.lastIndex)
+        val currentTrack = normalizedQueue[safeIndex]
+        val updatedTrack = currentTrack.copy(
+            durationMs = durationMs.takeIf { it > 0 } ?: currentTrack.durationMs,
+        )
+        val updatedQueue = normalizedQueue.toMutableList().also { playlist ->
+            playlist[safeIndex] = updatedTrack
+        }
+
+        playbackState = playbackState.copy(
+            currentTrack = updatedTrack,
+            playlist = updatedQueue,
+            currentIndex = safeIndex,
+            currentPositionMs = positionMs.coerceAtLeast(0L),
+            isPlaying = isPlaying,
+            isPreparing = false,
+            statusMessage = null,
+        )
     }
 
     fun onPlayerError(message: String?) {
@@ -320,23 +349,12 @@ class PlayerViewModel(
             statusMessage = "正在准备播放 ${targetTrack.title}...",
         )
 
-        if (targetTrack.audioUrl.isNotBlank()) {
-            playbackState = playbackState.copy(
-                currentTrack = targetTrack,
-                playlist = normalizedQueue,
-                currentIndex = index,
-                currentPositionMs = startPositionMs,
-                isPlaying = playWhenReady,
-                isPreparing = false,
-                statusMessage = null,
-            )
-            emitPlayerCommand(
-                PlayerCommand.LoadTrack(
-                    id = nextPlayerCommandId(),
-                    track = targetTrack,
-                    playWhenReady = playWhenReady,
-                    startPositionMs = startPositionMs,
-                ),
+        if (normalizedQueue.all { it.audioUrl.isNotBlank() }) {
+            commitPlayableQueue(
+                queue = normalizedQueue,
+                index = index,
+                playWhenReady = playWhenReady,
+                startPositionMs = startPositionMs,
             )
             return
         }
@@ -344,10 +362,11 @@ class PlayerViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    neteaseSearchRepository.resolvePlayableTrack(targetTrack)
+                    neteaseSearchRepository.resolvePlayableTracks(normalizedQueue)
                 }
-            }.onSuccess { resolvedTrack ->
+            }.onSuccess { resolvedQueue ->
                 if (requestId != latestPlaybackRequestId) return@onSuccess
+                val resolvedTrack = resolvedQueue.getOrNull(index) ?: targetTrack
                 if (resolvedTrack.audioUrl.isBlank()) {
                     playbackState = playbackState.copy(
                         currentTrack = normalizeTrack(targetTrack),
@@ -361,24 +380,11 @@ class PlayerViewModel(
                     return@onSuccess
                 }
 
-                val updatedTrack = normalizeTrack(resolvedTrack)
-                val updatedQueue = normalizedQueue.toMutableList().also { it[index] = updatedTrack }
-                playbackState = playbackState.copy(
-                    currentTrack = updatedTrack,
-                    playlist = updatedQueue,
-                    currentIndex = index,
-                    currentPositionMs = startPositionMs,
-                    isPlaying = playWhenReady,
-                    isPreparing = false,
-                    statusMessage = null,
-                )
-                emitPlayerCommand(
-                    PlayerCommand.LoadTrack(
-                        id = nextPlayerCommandId(),
-                        track = updatedTrack,
-                        playWhenReady = playWhenReady,
-                        startPositionMs = startPositionMs,
-                    ),
+                commitPlayableQueue(
+                    queue = resolvedQueue.map(::normalizeTrack),
+                    index = index,
+                    playWhenReady = playWhenReady,
+                    startPositionMs = startPositionMs,
                 )
             }.onFailure {
                 if (requestId != latestPlaybackRequestId) return@onFailure
@@ -393,6 +399,35 @@ class PlayerViewModel(
                 )
             }
         }
+    }
+
+    private fun commitPlayableQueue(
+        queue: List<Track>,
+        index: Int,
+        playWhenReady: Boolean,
+        startPositionMs: Long,
+    ) {
+        if (queue.isEmpty() || index !in queue.indices) return
+
+        val currentTrack = queue[index]
+        playbackState = playbackState.copy(
+            currentTrack = currentTrack,
+            playlist = queue,
+            currentIndex = index,
+            currentPositionMs = startPositionMs,
+            isPlaying = playWhenReady,
+            isPreparing = false,
+            statusMessage = null,
+        )
+        emitPlayerCommand(
+            PlayerCommand.LoadTrack(
+                id = nextPlayerCommandId(),
+                queue = queue,
+                index = index,
+                playWhenReady = playWhenReady,
+                startPositionMs = startPositionMs,
+            ),
+        )
     }
 
     private fun normalizeTrack(track: Track): Track {

@@ -3,16 +3,19 @@ package com.twocents.player.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.net.toUri
-import androidx.media3.common.AudioAttributes
+import androidx.core.content.ContextCompat
 import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaController
+import com.twocents.player.playback.PlaybackService
+import com.twocents.player.playback.toMediaItem
+import com.twocents.player.playback.toTrack
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -20,75 +23,68 @@ import kotlinx.coroutines.isActive
 fun BindPlayer(
     viewModel: PlayerViewModel,
 ) {
-    val context = LocalContext.current
-    val player = remember {
-        ExoPlayer.Builder(context).build().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(C.USAGE_MEDIA)
-                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                    .build(),
-                true,
-            )
-            setHandleAudioBecomingNoisy(true)
-        }
+    val context = LocalContext.current.applicationContext
+    val controllerFuture = remember(context) {
+        MediaController.Builder(context, PlaybackService.sessionToken(context)).buildAsync()
     }
+    var controller by remember { mutableStateOf<MediaController?>(null) }
     val playbackState = viewModel.playbackState
     val pendingCommand = viewModel.pendingPlayerCommand
 
-    DisposableEffect(player, viewModel) {
+    DisposableEffect(controllerFuture) {
+        controllerFuture.addListener(
+            {
+                controller = runCatching { controllerFuture.get() }.getOrNull()
+            },
+            ContextCompat.getMainExecutor(context),
+        )
+
+        onDispose {
+            controller = null
+            MediaController.releaseFuture(controllerFuture)
+        }
+    }
+
+    DisposableEffect(controller, viewModel) {
+        val player = controller ?: return@DisposableEffect onDispose { }
+
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 viewModel.onPlayerIsPlayingChanged(isPlaying)
             }
 
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                when (playbackState) {
-                    Player.STATE_READY -> {
-                        viewModel.onPlayerProgress(
-                            positionMs = player.currentPosition,
-                            durationMs = player.duration,
-                        )
-                    }
-
-                    Player.STATE_ENDED -> {
-                        viewModel.onTrackEnded()
-                    }
-                }
+            override fun onEvents(player: Player, events: Player.Events) {
+                syncPlayerState(player, viewModel)
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                viewModel.onPlayerError(error.localizedMessage ?: error.errorCodeName)
+                viewModel.onPlayerError(error.message ?: error.errorCodeName)
             }
         }
 
         player.addListener(listener)
+        syncPlayerState(player, viewModel)
+
         onDispose {
             player.removeListener(listener)
-            player.release()
         }
     }
 
-    LaunchedEffect(pendingCommand?.id) {
+    LaunchedEffect(controller, pendingCommand?.id) {
+        val player = controller ?: return@LaunchedEffect
+
         when (val command = pendingCommand) {
             is PlayerCommand.LoadTrack -> {
-                val mediaItem = MediaItem.Builder()
-                    .setUri(command.track.audioUrl)
-                    .setMediaMetadata(
-                        MediaMetadata.Builder()
-                            .setTitle(command.track.title)
-                            .setArtist(command.track.artist)
-                            .setAlbumTitle(command.track.album)
-                            .setArtworkUri(command.track.coverUrl.takeIf { it.isNotBlank() }?.toUri())
-                            .build(),
-                    )
-                    .build()
-
-                player.setMediaItem(mediaItem, command.startPositionMs)
+                player.setMediaItems(
+                    command.queue.map { it.toMediaItem() },
+                    command.index,
+                    command.startPositionMs,
+                )
                 player.prepare()
-                player.playWhenReady = command.playWhenReady
                 if (command.playWhenReady) {
                     player.play()
+                } else {
+                    player.pause()
                 }
                 viewModel.onPlayerCommandHandled(command.id)
             }
@@ -112,7 +108,9 @@ fun BindPlayer(
         }
     }
 
-    LaunchedEffect(player, playbackState.currentTrack?.id, playbackState.isPlaying) {
+    LaunchedEffect(controller, playbackState.currentTrack?.id, playbackState.isPlaying) {
+        val player = controller ?: return@LaunchedEffect
+
         while (isActive) {
             if (playbackState.currentTrack != null) {
                 viewModel.onPlayerProgress(
@@ -123,4 +121,28 @@ fun BindPlayer(
             delay(if (playbackState.isPlaying) 500L else 1000L)
         }
     }
+}
+
+private fun syncPlayerState(
+    player: Player,
+    viewModel: PlayerViewModel,
+) {
+    val queue = buildList(player.mediaItemCount) {
+        for (index in 0 until player.mediaItemCount) {
+            add(player.getMediaItemAt(index).toTrack())
+        }
+    }
+
+    val currentIndex = player.currentMediaItemIndex
+        .takeIf { it != C.INDEX_UNSET }
+        ?.coerceIn(0, (queue.lastIndex).coerceAtLeast(0))
+        ?: 0
+
+    viewModel.onPlayerQueueChanged(
+        queue = queue,
+        currentIndex = currentIndex,
+        positionMs = player.currentPosition,
+        durationMs = player.duration,
+        isPlaying = player.isPlaying,
+    )
 }
