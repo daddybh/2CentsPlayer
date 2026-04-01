@@ -1,367 +1,712 @@
 package com.twocents.player.ui
 
+import android.animation.ValueAnimator
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.*
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.twocents.player.data.Track
-import com.twocents.player.ui.theme.*
+import com.twocents.player.ui.theme.AccentCoral
+import com.twocents.player.ui.theme.AccentGold
+import com.twocents.player.ui.theme.AccentMint
+import com.twocents.player.ui.theme.AccentSky
+import com.twocents.player.ui.theme.DeepOceanBackground
+import com.twocents.player.ui.theme.FavoriteRed
+import com.twocents.player.ui.theme.MidnightBackground
+import com.twocents.player.ui.theme.SurfaceElevated
+import com.twocents.player.ui.theme.SurfacePrimary
+import com.twocents.player.ui.theme.SurfaceSecondary
+import com.twocents.player.ui.theme.TextMuted
+import com.twocents.player.ui.theme.TextPrimary
+import com.twocents.player.ui.theme.TextSecondary
+import com.twocents.player.ui.theme.TextTertiary
+
+private val HeroShape = RoundedCornerShape(36.dp)
+private val PanelShape = RoundedCornerShape(30.dp)
+private val PillShape = RoundedCornerShape(999.dp)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerApp(
     viewModel: PlayerViewModel = viewModel()
 ) {
-    val state = viewModel.playbackState
-    val track = state.currentTrack
+    val playbackState = viewModel.playbackState
     val searchState = viewModel.searchState
-
-    Scaffold(
-        containerColor = DarkBackground,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = "2Cents Player",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = TextPrimary,
-                    )
-                },
-                actions = {
-                    IconButton(onClick = viewModel::openSearch) {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "搜索",
-                            tint = TextPrimary,
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent,
-                ),
-            )
-        }
-    ) { innerPadding ->
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            DarkBackground,
-                            DarkSurface,
-                            DarkBackground,
-                        )
-                    )
-                ),
-        ) {
-            // Ambient glow behind album art
-            AmbientGlow(isPlaying = state.isPlaying)
-
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Album Art
-                AlbumArt(
-                    isPlaying = state.isPlaying,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-
-                Spacer(modifier = Modifier.height(32.dp))
-
-                // Track Info
-                TrackInfo(
-                    title = track?.title ?: "未选择歌曲",
-                    artist = track?.artist ?: "未知艺术家",
-                    album = track?.album ?: "",
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Progress Bar
-                ProgressBar(
-                    currentMs = state.currentPositionMs,
-                    totalMs = track?.durationMs ?: 0L,
-                    onSeek = viewModel::seekTo,
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Playback Controls
-                PlaybackControls(
-                    isPlaying = state.isPlaying,
-                    isFavorite = track?.isFavorite ?: false,
-                    onPlayPause = viewModel::togglePlayPause,
-                    onSkipNext = viewModel::skipNext,
-                    onSkipPrevious = viewModel::skipPrevious,
-                    onToggleFavorite = viewModel::toggleFavorite,
-                )
-
-                Spacer(modifier = Modifier.height(48.dp))
-            }
-        }
-
-        if (searchState.isVisible) {
-            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-            ModalBottomSheet(
-                onDismissRequest = viewModel::closeSearch,
-                sheetState = sheetState,
-                containerColor = DarkCard,
-                dragHandle = {
-                    BottomSheetDefaults.DragHandle(color = TextTertiary)
-                },
-            ) {
-                SearchSheet(
-                    state = searchState,
-                    currentTrackId = track?.id,
-                    onQueryChange = viewModel::updateSearchQuery,
-                    onSearch = viewModel::searchTracks,
-                    onClose = viewModel::closeSearch,
-                    onSelectTrack = viewModel::selectTrack,
-                )
-            }
-        }
+    val currentTrack = playbackState.currentTrack
+    val orderedQueue = remember(playbackState.playlist, playbackState.currentIndex) {
+        buildOrderedQueue(
+            playlist = playbackState.playlist,
+            currentIndex = playbackState.currentIndex,
+        )
     }
-}
-
-// ─── Album Art ───────────────────────────────────────────────────────────────
-
-@Composable
-private fun AlbumArt(
-    isPlaying: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val infiniteTransition = rememberInfiniteTransition(label = "rotate")
-    val rotation by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 20_000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "disc_rotation",
-    )
-
-    val scale by animateFloatAsState(
-        targetValue = if (isPlaying) 1f else 0.9f,
-        animationSpec = spring(dampingRatio = 0.6f, stiffness = 300f),
-        label = "scale",
-    )
 
     Box(
-        modifier = modifier
-            .size(280.dp)
-            .scale(scale)
-            .graphicsLayer {
-                rotationZ = if (isPlaying) rotation else 0f
-            },
-        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        MidnightBackground,
+                        DeepOceanBackground,
+                        MidnightBackground,
+                    ),
+                ),
+            ),
     ) {
-        // Outer disc ring
-        Box(
+        PlayerBackdrop(isPlaying = playbackState.isPlaying)
+
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .shadow(24.dp, CircleShape)
-                .clip(CircleShape)
-                .background(
-                    Brush.sweepGradient(
-                        colors = listOf(
-                            AccentPurple.copy(alpha = 0.8f),
-                            AccentPink.copy(alpha = 0.6f),
-                            AccentCyan.copy(alpha = 0.4f),
-                            AccentPurple.copy(alpha = 0.8f),
-                        )
-                    )
-                ),
-        )
-
-        // Inner disc surface
-        Box(
-            modifier = Modifier
-                .size(260.dp)
-                .clip(CircleShape)
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(
-                            DarkSurfaceVariant,
-                            DarkSurface,
-                            DarkCard,
-                        )
-                    )
-                ),
-            contentAlignment = Alignment.Center,
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            // Groove lines (vinyl effect)
-            for (i in 1..5) {
-                Box(
-                    modifier = Modifier
-                        .size((60 + i * 36).dp)
-                        .clip(CircleShape)
-                        .background(Color.Transparent)
-                        .then(
-                            Modifier.background(
-                                Brush.radialGradient(
-                                    colors = listOf(
-                                        Color.Transparent,
-                                        TextTertiary.copy(alpha = 0.08f),
-                                        Color.Transparent,
-                                    )
-                                )
-                            )
-                        ),
-                )
-            }
+            PlayerHeader(
+                queueCount = playbackState.playlist.size,
+                onSearch = viewModel::openSearch,
+            )
 
-            // Center label
-            Box(
-                modifier = Modifier
-                    .size(80.dp)
-                    .shadow(8.dp, CircleShape)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(AccentPurple, AccentPink),
-                        )
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Default.MusicNote,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(36.dp),
-                )
-            }
+            HeroArtwork(
+                album = currentTrack?.album.orEmpty(),
+                isPlaying = playbackState.isPlaying,
+                isFavorite = currentTrack?.isFavorite == true,
+                currentIndex = playbackState.currentIndex,
+                queueCount = playbackState.playlist.size,
+                onToggleFavorite = viewModel::toggleFavorite,
+            )
+
+            TrackHeadline(
+                title = currentTrack?.title ?: "未选择歌曲",
+                artist = currentTrack?.artist ?: "未知艺术家",
+                album = currentTrack?.album.orEmpty(),
+                isPlaying = playbackState.isPlaying,
+                currentIndex = playbackState.currentIndex,
+                playlistSize = playbackState.playlist.size,
+            )
+
+            InsightStrip(
+                isPlaying = playbackState.isPlaying,
+                currentMs = playbackState.currentPositionMs,
+                totalMs = currentTrack?.durationMs ?: 0L,
+                currentIndex = playbackState.currentIndex,
+                playlistSize = playbackState.playlist.size,
+            )
+
+            PlaybackPanel(
+                currentMs = playbackState.currentPositionMs,
+                totalMs = currentTrack?.durationMs ?: 0L,
+                isPlaying = playbackState.isPlaying,
+                isFavorite = currentTrack?.isFavorite == true,
+                queueCount = playbackState.playlist.size,
+                onSeek = viewModel::seekTo,
+                onPlayPause = viewModel::togglePlayPause,
+                onSkipNext = viewModel::skipNext,
+                onSkipPrevious = viewModel::skipPrevious,
+                onToggleFavorite = viewModel::toggleFavorite,
+            )
+
+            QueueSection(
+                queue = orderedQueue.take(4),
+                currentIndex = playbackState.currentIndex,
+                isPlaying = playbackState.isPlaying,
+                onSelectTrack = viewModel::selectPlaylistTrack,
+            )
+        }
+    }
+
+    if (searchState.isVisible) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = viewModel::closeSearch,
+            sheetState = sheetState,
+            containerColor = SurfacePrimary,
+            contentColor = TextPrimary,
+            dragHandle = {
+                BottomSheetDefaults.DragHandle(color = TextTertiary)
+            },
+        ) {
+            SearchSheet(
+                state = searchState,
+                currentTrackId = currentTrack?.id,
+                onQueryChange = viewModel::updateSearchQuery,
+                onSearch = viewModel::searchTracks,
+                onClose = viewModel::closeSearch,
+                onSelectTrack = viewModel::selectTrack,
+            )
         }
     }
 }
 
-// ─── Ambient Glow ───────────────────────────────────────────────────────────
-
 @Composable
-private fun AmbientGlow(isPlaying: Boolean) {
-    val alpha by animateFloatAsState(
-        targetValue = if (isPlaying) 0.3f else 0.1f,
-        animationSpec = tween(durationMillis = 800),
-        label = "glow_alpha",
+private fun PlayerBackdrop(isPlaying: Boolean) {
+    val glowAlpha by animateFloatAsState(
+        targetValue = if (isPlaying) 0.34f else 0.18f,
+        animationSpec = tween(durationMillis = 900),
+        label = "backdrop_glow",
     )
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .blur(120.dp),
+            .blur(110.dp),
     ) {
         Box(
             modifier = Modifier
-                .size(300.dp)
-                .offset(x = (-50).dp, y = 100.dp)
+                .size(320.dp)
+                .offset(x = (-90).dp, y = 24.dp)
                 .background(
                     Brush.radialGradient(
                         colors = listOf(
-                            AccentPurple.copy(alpha = alpha),
+                            AccentSky.copy(alpha = glowAlpha * 0.75f),
                             Color.Transparent,
-                        )
-                    )
+                        ),
+                    ),
                 ),
         )
         Box(
             modifier = Modifier
-                .size(250.dp)
-                .offset(x = 150.dp, y = 300.dp)
+                .size(280.dp)
+                .offset(x = 180.dp, y = 160.dp)
                 .background(
                     Brush.radialGradient(
                         colors = listOf(
-                            AccentPink.copy(alpha = alpha * 0.7f),
+                            AccentMint.copy(alpha = glowAlpha),
                             Color.Transparent,
-                        )
-                    )
+                        ),
+                    ),
+                ),
+        )
+        Box(
+            modifier = Modifier
+                .size(240.dp)
+                .offset(x = 80.dp, y = 520.dp)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            AccentCoral.copy(alpha = glowAlpha * 0.45f),
+                            Color.Transparent,
+                        ),
+                    ),
                 ),
         )
     }
 }
 
-// ─── Track Info ─────────────────────────────────────────────────────────────
+@Composable
+private fun PlayerHeader(
+    queueCount: Int,
+    onSearch: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = "CURATED SESSION",
+                style = MaterialTheme.typography.labelLarge,
+                color = AccentMint.copy(alpha = 0.92f),
+            )
+            Text(
+                text = "2Cents Player",
+                style = MaterialTheme.typography.titleLarge,
+                color = TextPrimary,
+            )
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MiniInfoPill(
+                icon = Icons.AutoMirrored.Filled.QueueMusic,
+                label = queueCount.toString(),
+            )
+            HeaderActionButton(
+                icon = Icons.Default.Search,
+                contentDescription = "打开搜索",
+                onClick = onSearch,
+            )
+        }
+    }
+}
 
 @Composable
-private fun TrackInfo(
+private fun HeaderActionButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.size(44.dp),
+        shape = CircleShape,
+        color = SurfaceSecondary.copy(alpha = 0.75f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = TextPrimary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HeroArtwork(
+    album: String,
+    isPlaying: Boolean,
+    isFavorite: Boolean,
+    currentIndex: Int,
+    queueCount: Int,
+    onToggleFavorite: () -> Unit,
+) {
+    val motionEnabled = rememberMotionEnabled()
+    val rotationTransition = rememberInfiniteTransition(label = "hero_disc")
+    val discRotation by rotationTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 18000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "disc_rotation",
+    )
+    val favoriteTint by animateColorAsState(
+        targetValue = if (isFavorite) FavoriteRed else TextPrimary,
+        animationSpec = tween(durationMillis = 260),
+        label = "favorite_tint",
+    )
+
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val coverSize = (maxWidth * 0.72f).coerceIn(224.dp, 304.dp)
+        val discSize = (coverSize * 0.82f).coerceIn(180.dp, 240.dp)
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(coverSize + 56.dp),
+        ) {
+            HeroDisc(
+                modifier = Modifier
+                    .size(discSize)
+                    .align(Alignment.CenterEnd)
+                    .offset(x = (-12).dp)
+                    .graphicsLayer {
+                        rotationZ = if (motionEnabled && isPlaying) discRotation else 0f
+                    },
+                isPlaying = isPlaying,
+            )
+
+            Box(
+                modifier = Modifier
+                    .size(coverSize)
+                    .align(Alignment.CenterStart)
+                    .shadow(24.dp, HeroShape)
+                    .clip(HeroShape)
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(
+                                SurfaceElevated,
+                                SurfaceSecondary,
+                                SurfacePrimary,
+                            ),
+                        ),
+                    )
+                    .border(1.dp, Color.White.copy(alpha = 0.08f), HeroShape)
+                    .padding(24.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    AccentSky.copy(alpha = 0.22f),
+                                    Color.Transparent,
+                                ),
+                            ),
+                        ),
+                )
+
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        MetaChip(
+                            icon = Icons.Default.Album,
+                            text = "VOL ${"%02d".format(currentIndex + 1)}",
+                        )
+
+                        Surface(
+                            modifier = Modifier.size(42.dp),
+                            shape = CircleShape,
+                            color = Color.Black.copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clickable(onClick = onToggleFavorite),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                    contentDescription = "收藏当前歌曲",
+                                    tint = favoriteTint,
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    Box(
+                        modifier = Modifier
+                            .size(92.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.08f))
+                            .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.GraphicEq,
+                            contentDescription = null,
+                            tint = AccentMint,
+                            modifier = Modifier.size(44.dp),
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    Text(
+                        text = album.ifBlank { "Tonight's Selection" },
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = TextPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = if (queueCount > 1) "$queueCount 首歌的播放清单，带一点编辑感和空间感。" else "为单曲准备的沉浸式播放器界面。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeroDisc(
+    modifier: Modifier = Modifier,
+    isPlaying: Boolean,
+) {
+    Box(
+        modifier = modifier
+            .shadow(20.dp, CircleShape)
+            .clip(CircleShape)
+            .background(
+                Brush.sweepGradient(
+                    colors = listOf(
+                        AccentMint.copy(alpha = 0.72f),
+                        AccentSky.copy(alpha = 0.58f),
+                        AccentGold.copy(alpha = 0.44f),
+                        AccentMint.copy(alpha = 0.72f),
+                    ),
+                ),
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize(0.9f)
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            SurfaceSecondary,
+                            SurfacePrimary,
+                            MidnightBackground,
+                        ),
+                    ),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            repeat(4) { index ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize(0.82f - (index * 0.12f))
+                        .border(
+                            width = 1.dp,
+                            color = Color.White.copy(alpha = 0.06f),
+                            shape = CircleShape,
+                        ),
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(66.dp)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(AccentMint, AccentSky),
+                        ),
+                    )
+                    .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = if (isPlaying) "LIVE" else "REST",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MidnightBackground,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrackHeadline(
     title: String,
     artist: String,
     album: String,
+    isPlaying: Boolean,
+    currentIndex: Int,
+    playlistSize: Int,
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
             text = title,
-            style = MaterialTheme.typography.headlineMedium,
+            style = MaterialTheme.typography.displayMedium,
             color = TextPrimary,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        Spacer(modifier = Modifier.height(8.dp))
+
         Text(
             text = artist,
             style = MaterialTheme.typography.bodyLarge,
             color = TextSecondary,
-            textAlign = TextAlign.Center,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        if (album.isNotBlank()) {
-            Spacer(modifier = Modifier.height(4.dp))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            MetaChip(
+                icon = Icons.Default.Album,
+                text = album.ifBlank { "单曲" },
+            )
+            MetaChip(
+                icon = Icons.AutoMirrored.Filled.QueueMusic,
+                text = "队列 ${currentIndex + 1}/${playlistSize.coerceAtLeast(1)}",
+            )
+            MetaChip(
+                icon = Icons.Default.GraphicEq,
+                text = if (isPlaying) "正在播放" else "已暂停",
+            )
+        }
+    }
+}
+
+@Composable
+private fun MetaChip(
+    icon: ImageVector,
+    text: String,
+) {
+    Surface(
+        shape = PillShape,
+        color = SurfaceSecondary.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = AccentSky,
+                modifier = Modifier.size(16.dp),
+            )
             Text(
-                text = album,
-                style = MaterialTheme.typography.bodyMedium,
+                text = text,
+                style = MaterialTheme.typography.labelMedium,
+                color = TextSecondary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun InsightStrip(
+    isPlaying: Boolean,
+    currentMs: Long,
+    totalMs: Long,
+    currentIndex: Int,
+    playlistSize: Int,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        InsightCard(
+            modifier = Modifier.weight(1f),
+            icon = Icons.Default.GraphicEq,
+            label = "状态",
+            value = if (isPlaying) "播放中" else "暂停",
+        )
+        InsightCard(
+            modifier = Modifier.weight(1f),
+            icon = Icons.Default.Schedule,
+            label = "剩余",
+            value = formatTime((totalMs - currentMs).coerceAtLeast(0L)),
+        )
+        InsightCard(
+            modifier = Modifier.weight(1f),
+            icon = Icons.AutoMirrored.Filled.QueueMusic,
+            label = "队列",
+            value = "${currentIndex + 1}/${playlistSize.coerceAtLeast(1)}",
+        )
+    }
+}
+
+@Composable
+private fun InsightCard(
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    label: String,
+    value: String,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(24.dp),
+        color = SurfacePrimary.copy(alpha = 0.74f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.06f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = AccentMint,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
                 color = TextTertiary,
-                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleSmall,
+                color = TextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -369,7 +714,395 @@ private fun TrackInfo(
     }
 }
 
-// ─── Progress Bar ───────────────────────────────────────────────────────────
+@Composable
+private fun PlaybackPanel(
+    currentMs: Long,
+    totalMs: Long,
+    isPlaying: Boolean,
+    isFavorite: Boolean,
+    queueCount: Int,
+    onSeek: (Long) -> Unit,
+    onPlayPause: () -> Unit,
+    onSkipNext: () -> Unit,
+    onSkipPrevious: () -> Unit,
+    onToggleFavorite: () -> Unit,
+) {
+    GlassPanel {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Playback",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary,
+                )
+                Text(
+                    text = "进度、切歌和收藏都集中在这里。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary,
+                )
+            }
+            MiniInfoPill(
+                icon = Icons.AutoMirrored.Filled.QueueMusic,
+                label = "${queueCount.coerceAtLeast(1)} 首",
+            )
+        }
+
+        ProgressBar(
+            currentMs = currentMs,
+            totalMs = totalMs,
+            onSeek = onSeek,
+        )
+
+        PlaybackControls(
+            isPlaying = isPlaying,
+            isFavorite = isFavorite,
+            onPlayPause = onPlayPause,
+            onSkipNext = onSkipNext,
+            onSkipPrevious = onSkipPrevious,
+            onToggleFavorite = onToggleFavorite,
+        )
+    }
+}
+
+@Composable
+private fun ProgressBar(
+    currentMs: Long,
+    totalMs: Long,
+    onSeek: (Long) -> Unit,
+) {
+    val progress = if (totalMs > 0) currentMs.toFloat() / totalMs else 0f
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Slider(
+            value = progress.coerceIn(0f, 1f),
+            onValueChange = { onSeek((it * totalMs).toLong()) },
+            colors = SliderDefaults.colors(
+                thumbColor = AccentMint,
+                activeTrackColor = AccentMint,
+                inactiveTrackColor = SurfaceSecondary.copy(alpha = 0.85f),
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = formatTime(currentMs),
+                style = MaterialTheme.typography.labelMedium,
+                color = TextSecondary,
+            )
+            Text(
+                text = formatTime(totalMs),
+                style = MaterialTheme.typography.labelMedium,
+                color = TextSecondary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlaybackControls(
+    isPlaying: Boolean,
+    isFavorite: Boolean,
+    onPlayPause: () -> Unit,
+    onSkipNext: () -> Unit,
+    onSkipPrevious: () -> Unit,
+    onToggleFavorite: () -> Unit,
+) {
+    val favoriteTint by animateColorAsState(
+        targetValue = if (isFavorite) FavoriteRed else TextSecondary,
+        animationSpec = tween(durationMillis = 260),
+        label = "controls_favorite",
+    )
+    val playScale by animateFloatAsState(
+        targetValue = if (isPlaying) 1f else 0.96f,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 260f),
+        label = "play_button_scale",
+    )
+
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Surface(
+            shape = PillShape,
+            color = SurfaceSecondary.copy(alpha = 0.78f),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+        ) {
+            Row(
+                modifier = Modifier
+                    .clickable(onClick = onToggleFavorite)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    contentDescription = "收藏当前歌曲",
+                    tint = favoriteTint,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = if (isFavorite) "已加入收藏" else "加入收藏",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = TextPrimary,
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircleControlButton(
+                icon = Icons.Default.SkipPrevious,
+                size = 58.dp,
+                contentDescription = "上一曲",
+                onClick = onSkipPrevious,
+            )
+
+            Spacer(modifier = Modifier.width(14.dp))
+
+            Box(
+                modifier = Modifier
+                    .size(86.dp)
+                    .scale(playScale)
+                    .shadow(18.dp, CircleShape)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(AccentMint, AccentSky),
+                        ),
+                    )
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onPlayPause,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (isPlaying) "暂停" else "播放",
+                    tint = MidnightBackground,
+                    modifier = Modifier.size(42.dp),
+                )
+            }
+
+            Spacer(modifier = Modifier.width(14.dp))
+
+            CircleControlButton(
+                icon = Icons.Default.SkipNext,
+                size = 58.dp,
+                contentDescription = "下一曲",
+                onClick = onSkipNext,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CircleControlButton(
+    icon: ImageVector,
+    size: androidx.compose.ui.unit.Dp,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.size(size),
+        shape = CircleShape,
+        color = SurfaceSecondary.copy(alpha = 0.82f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = TextPrimary,
+                modifier = Modifier.size(28.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueueSection(
+    queue: List<Pair<Int, Track>>,
+    currentIndex: Int,
+    isPlaying: Boolean,
+    onSelectTrack: (Int) -> Unit,
+) {
+    GlassPanel {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "播放队列",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary,
+                )
+                Text(
+                    text = "点一下列表就能直接切歌。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary,
+                )
+            }
+            MiniInfoPill(
+                icon = Icons.AutoMirrored.Filled.QueueMusic,
+                label = queue.size.toString(),
+            )
+        }
+
+        queue.forEachIndexed { order, (trackIndex, track) ->
+            QueueRow(
+                track = track,
+                trackIndex = trackIndex,
+                isCurrent = trackIndex == currentIndex,
+                isPlaying = isPlaying,
+                order = order,
+                onClick = { onSelectTrack(trackIndex) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueueRow(
+    track: Track,
+    trackIndex: Int,
+    isCurrent: Boolean,
+    isPlaying: Boolean,
+    order: Int,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(24.dp)
+    val backgroundBrush = if (isCurrent) {
+        Brush.linearGradient(
+            colors = listOf(
+                AccentMint.copy(alpha = 0.20f),
+                AccentSky.copy(alpha = 0.10f),
+            ),
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                SurfaceSecondary.copy(alpha = 0.84f),
+                SurfacePrimary.copy(alpha = 0.92f),
+            ),
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(backgroundBrush)
+            .border(
+                width = 1.dp,
+                color = if (isCurrent) AccentMint.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.06f),
+                shape = shape,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 15.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(
+                        if (isCurrent) {
+                            Brush.linearGradient(
+                                colors = listOf(AccentMint, AccentSky),
+                            )
+                        } else {
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = 0.08f),
+                                    Color.White.copy(alpha = 0.04f),
+                                ),
+                            )
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (isCurrent && isPlaying) {
+                    Icon(
+                        imageVector = Icons.Default.GraphicEq,
+                        contentDescription = null,
+                        tint = MidnightBackground,
+                    )
+                } else {
+                    Text(
+                        text = "%02d".format(trackIndex + 1),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (isCurrent) MidnightBackground else TextPrimary,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(14.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = track.artist,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = when {
+                        isCurrent && isPlaying -> "当前播放"
+                        isCurrent -> "当前歌曲"
+                        order == 1 -> "下一首"
+                        else -> "待播放"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isCurrent) AccentMint else TextTertiary,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = formatTime(track.durationMs),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextTertiary,
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun SearchSheet(
@@ -385,17 +1118,26 @@ private fun SearchSheet(
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = "搜索网易云音乐",
-                style = MaterialTheme.typography.titleLarge,
-                color = TextPrimary,
-                modifier = Modifier.weight(1f),
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "搜索网易云音乐",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "把外部搜索也放进同一套播放器体验里。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary,
+                )
+            }
+
             IconButton(onClick = onClose) {
                 Icon(
                     imageVector = Icons.Default.Close,
@@ -405,13 +1147,13 @@ private fun SearchSheet(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
         OutlinedTextField(
             value = state.query,
             onValueChange = onQueryChange,
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("输入歌名 / 歌手 / 专辑") },
+            label = {
+                Text("输入歌名 / 歌手 / 专辑")
+            },
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { onSearch() }),
@@ -422,9 +1164,9 @@ private fun SearchSheet(
                 ) {
                     if (state.isLoading) {
                         CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp,
-                            modifier = Modifier.size(20.dp),
-                            color = AccentPurple,
+                            color = AccentMint,
                         )
                     } else {
                         Icon(
@@ -435,36 +1177,39 @@ private fun SearchSheet(
                 }
             },
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = AccentPurple,
-                unfocusedBorderColor = DarkSurfaceVariant,
-                focusedLabelColor = AccentPurple,
-                cursorColor = AccentPurple,
+                focusedBorderColor = AccentMint,
+                unfocusedBorderColor = TextMuted.copy(alpha = 0.65f),
+                focusedLabelColor = AccentMint,
+                unfocusedLabelColor = TextTertiary,
+                cursorColor = AccentMint,
                 focusedTextColor = TextPrimary,
                 unfocusedTextColor = TextPrimary,
+                focusedContainerColor = SurfaceSecondary.copy(alpha = 0.64f),
+                unfocusedContainerColor = SurfaceSecondary.copy(alpha = 0.38f),
+                focusedTrailingIconColor = AccentMint,
+                unfocusedTrailingIconColor = TextSecondary,
             ),
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
-
         when {
             state.errorMessage != null -> {
-                SearchFeedback(
+                SearchHintCard(
                     title = "搜索失败",
                     body = state.errorMessage,
                 )
             }
 
             state.isLoading && state.results.isEmpty() -> {
-                SearchFeedback(
+                SearchHintCard(
                     title = "正在搜索",
-                    body = "稍等一下，正在从网易云网页端拉取结果。",
+                    body = "稍等一下，正在从网易云网页端抓取结果。",
                 )
             }
 
             state.hasSearched && state.results.isEmpty() -> {
-                SearchFeedback(
+                SearchHintCard(
                     title = "没有找到结果",
-                    body = "换个关键词试试，比如歌名、歌手名或专辑名。",
+                    body = "换个关键词试试，比如完整歌名、歌手名或专辑名。",
                 )
             }
 
@@ -486,26 +1231,27 @@ private fun SearchSheet(
             }
 
             else -> {
-                SearchFeedback(
+                SearchHintCard(
                     title = "开始搜索",
-                    body = "这个入口已经接到网易云网页搜索，输入关键词后就能拿到歌曲列表。",
+                    body = "这里已经接好了网易云搜索，输入关键词后就能把结果直接加入当前播放器上下文。",
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(6.dp))
     }
 }
 
 @Composable
-private fun SearchFeedback(
+private fun SearchHintCard(
     title: String,
     body: String,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
-        color = DarkSurface,
+        color = SurfaceSecondary.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.06f)),
     ) {
         Column(
             modifier = Modifier.padding(20.dp),
@@ -531,16 +1277,38 @@ private fun SearchResultCard(
     isCurrentTrack: Boolean,
     onClick: () -> Unit,
 ) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(24.dp),
-        color = if (isCurrentTrack) DarkSurfaceVariant else DarkSurface,
-        tonalElevation = if (isCurrentTrack) 6.dp else 0.dp,
+    val shape = RoundedCornerShape(24.dp)
+    val backgroundBrush = if (isCurrentTrack) {
+        Brush.linearGradient(
+            colors = listOf(
+                AccentMint.copy(alpha = 0.20f),
+                AccentSky.copy(alpha = 0.10f),
+            ),
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                SurfaceSecondary.copy(alpha = 0.84f),
+                SurfacePrimary.copy(alpha = 0.92f),
+            ),
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(backgroundBrush)
+            .border(
+                width = 1.dp,
+                color = if (isCurrentTrack) AccentMint.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.06f),
+                shape = shape,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 16.dp),
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
@@ -549,15 +1317,18 @@ private fun SearchResultCard(
                     .clip(RoundedCornerShape(18.dp))
                     .background(
                         Brush.linearGradient(
-                            colors = listOf(AccentPurple.copy(alpha = 0.8f), AccentPink.copy(alpha = 0.8f)),
-                        )
+                            colors = listOf(
+                                AccentSky.copy(alpha = 0.9f),
+                                AccentMint.copy(alpha = 0.9f),
+                            ),
+                        ),
                     ),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = Icons.Default.MusicNote,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = MidnightBackground,
                 )
             }
 
@@ -596,153 +1367,93 @@ private fun SearchResultCard(
             Text(
                 text = formatTime(track.durationMs),
                 style = MaterialTheme.typography.labelMedium,
-                color = if (isCurrentTrack) AccentPurple else TextTertiary,
+                color = if (isCurrentTrack) AccentMint else TextTertiary,
             )
         }
     }
 }
 
 @Composable
-private fun ProgressBar(
-    currentMs: Long,
-    totalMs: Long,
-    onSeek: (Long) -> Unit,
+private fun MiniInfoPill(
+    icon: ImageVector,
+    label: String,
 ) {
-    val progress = if (totalMs > 0) currentMs.toFloat() / totalMs else 0f
-
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Slider(
-            value = progress,
-            onValueChange = { onSeek((it * totalMs).toLong()) },
-            colors = SliderDefaults.colors(
-                thumbColor = AccentPurple,
-                activeTrackColor = AccentPurple,
-                inactiveTrackColor = DarkSurfaceVariant,
-            ),
-            modifier = Modifier.fillMaxWidth(),
-        )
+    Surface(
+        shape = PillShape,
+        color = SurfaceSecondary.copy(alpha = 0.76f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+    ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = formatTime(currentMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = TextTertiary,
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = AccentMint,
+                modifier = Modifier.size(16.dp),
             )
             Text(
-                text = formatTime(totalMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = TextTertiary,
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = TextPrimary,
             )
         }
+    }
+}
+
+@Composable
+private fun GlassPanel(
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(20.dp),
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = PanelShape,
+        color = Color.Transparent,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            SurfaceElevated.copy(alpha = 0.32f),
+                            SurfaceSecondary.copy(alpha = 0.76f),
+                            SurfacePrimary.copy(alpha = 0.94f),
+                        ),
+                    ),
+                )
+                .padding(contentPadding),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun rememberMotionEnabled(): Boolean = remember {
+    ValueAnimator.areAnimatorsEnabled()
+}
+
+private fun buildOrderedQueue(
+    playlist: List<Track>,
+    currentIndex: Int,
+): List<Pair<Int, Track>> {
+    if (playlist.isEmpty()) return emptyList()
+
+    return List(playlist.size) { offset ->
+        val index = (currentIndex + offset) % playlist.size
+        index to playlist[index]
     }
 }
 
 private fun formatTime(ms: Long): String {
-    val totalSeconds = ms / 1000
+    val safeMs = ms.coerceAtLeast(0L)
+    val totalSeconds = safeMs / 1000
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "%d:%02d".format(minutes, seconds)
-}
-
-// ─── Playback Controls ─────────────────────────────────────────────────────
-
-@Composable
-private fun PlaybackControls(
-    isPlaying: Boolean,
-    isFavorite: Boolean,
-    onPlayPause: () -> Unit,
-    onSkipNext: () -> Unit,
-    onSkipPrevious: () -> Unit,
-    onToggleFavorite: () -> Unit,
-) {
-    val favoriteColor by animateColorAsState(
-        targetValue = if (isFavorite) FavoriteRed else TextTertiary,
-        animationSpec = tween(300),
-        label = "fav_color",
-    )
-
-    val playScale by animateFloatAsState(
-        targetValue = 1f,
-        animationSpec = spring(dampingRatio = 0.4f),
-        label = "play_scale",
-    )
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // Favorite button
-        IconButton(
-            onClick = onToggleFavorite,
-            modifier = Modifier.size(48.dp),
-        ) {
-            Icon(
-                imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                contentDescription = "收藏",
-                tint = favoriteColor,
-                modifier = Modifier.size(28.dp),
-            )
-        }
-
-        // Previous
-        IconButton(
-            onClick = onSkipPrevious,
-            modifier = Modifier.size(56.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Default.SkipPrevious,
-                contentDescription = "上一曲",
-                tint = TextPrimary,
-                modifier = Modifier.size(36.dp),
-            )
-        }
-
-        // Play / Pause (large center button)
-        Box(
-            modifier = Modifier
-                .size(72.dp)
-                .scale(playScale)
-                .shadow(16.dp, CircleShape)
-                .clip(CircleShape)
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(AccentPurple, AccentPink),
-                    )
-                )
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onPlayPause,
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (isPlaying) "暂停" else "播放",
-                tint = Color.White,
-                modifier = Modifier.size(40.dp),
-            )
-        }
-
-        // Next
-        IconButton(
-            onClick = onSkipNext,
-            modifier = Modifier.size(56.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Default.SkipNext,
-                contentDescription = "下一曲",
-                tint = TextPrimary,
-                modifier = Modifier.size(36.dp),
-            )
-        }
-
-        // Spacer to balance with favorite button
-        Spacer(modifier = Modifier.size(48.dp))
-    }
 }

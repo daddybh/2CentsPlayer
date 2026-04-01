@@ -2,28 +2,19 @@ package com.twocents.player.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Primary palette — deep purple to violet gradient
-val Purple80 = Color(0xFFCFBCFF)
-val PurpleGrey80 = Color(0xFFCCC2DC)
-val Pink80 = Color(0xFFEFB8C8)
+val MidnightBackground = Color(0xFF08111E)
+val DeepOceanBackground = Color(0xFF0E1D31)
+val SurfacePrimary = Color(0xFF13273F)
+val SurfaceSecondary = Color(0xFF193551)
+val SurfaceElevated = Color(0xFF214666)
 
-val Purple40 = Color(0xFF7B2FF2)
-val PurpleGrey40 = Color(0xFF625B71)
-val Pink40 = Color(0xFFFF2D87)
+val AccentMint = Color(0xFF66E3B4)
+val AccentSky = Color(0xFF7BD7FF)
+val AccentGold = Color(0xFFF4C979)
+val AccentCoral = Color(0xFFFF8E81)
+val FavoriteRed = Color(0xFFFF7B8D)
 
-// Dark surface colors
-val DarkBackground = Color(0xFF0D0D1A)
-val DarkSurface = Color(0xFF1A1A2E)
-val DarkSurfaceVariant = Color(0xFF252540)
-val DarkCard = Color(0xFF16213E)
-
-// Accent colors
-val AccentPurple = Color(0xFF7B2FF2)
-val AccentPink = Color(0xFFFF2D87)
-val AccentCyan = Color(0xFF00D4FF)
-val FavoriteRed = Color(0xFFFF4757)
-
-// Text colors
-val TextPrimary = Color(0xFFF5F5F5)
-val TextSecondary = Color(0xFFB0B0CC)
-val TextTertiary = Color(0xFF6C6C8A)
+val TextPrimary = Color(0xFFF6F8FC)
+val TextSecondary = Color(0xFFC5D2E2)
+val TextTertiary = Color(0xFF8A9FB6)
+val TextMuted = Color(0xFF60758E)

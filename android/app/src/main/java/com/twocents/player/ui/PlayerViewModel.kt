@@ -166,6 +166,17 @@ class PlayerViewModel(
         }
     }
 
+    fun selectPlaylistTrack(index: Int) {
+        val playlist = playbackState.playlist
+        if (index !in playlist.indices) return
+
+        playbackState = playbackState.copy(
+            currentTrack = playlist[index],
+            currentIndex = index,
+            currentPositionMs = 0L,
+        )
+    }
+
     fun selectTrack(track: Track) {
         val updatedPlaylist = searchState.results.ifEmpty { listOf(track) }
         val selectedIndex = updatedPlaylist.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
