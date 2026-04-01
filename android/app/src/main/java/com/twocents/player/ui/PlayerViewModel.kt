@@ -19,6 +19,10 @@ class PlayerViewModel(
     application: Application,
 ) : AndroidViewModel(application) {
 
+    private companion object {
+        const val SEARCH_PAGE_SIZE = 20
+    }
+
     private val neteaseSearchRepository = NeteaseSearchRepository()
     private val favoritesStore = FavoritesStore(application)
     private val shuffleRandom = Random(System.currentTimeMillis())
@@ -141,9 +145,18 @@ class PlayerViewModel(
     }
 
     fun updateSearchQuery(query: String) {
+        val trimmedQuery = query.trim()
+        val isEditingNewQuery = trimmedQuery != searchState.activeQuery
+        if (isEditingNewQuery) {
+            latestSearchRequestId += 1L
+        }
+
         searchState = searchState.copy(
             query = query,
+            isLoading = if (isEditingNewQuery) false else searchState.isLoading,
+            isLoadingMore = false,
             errorMessage = null,
+            loadMoreErrorMessage = null,
         )
     }
 
@@ -151,8 +164,14 @@ class PlayerViewModel(
         val query = searchState.query.trim()
         if (query.isBlank()) {
             searchState = searchState.copy(
+                activeQuery = "",
+                isLoading = false,
+                isLoadingMore = false,
                 hasSearched = false,
                 errorMessage = null,
+                loadMoreErrorMessage = null,
+                canLoadMore = false,
+                nextOffset = 0,
                 results = emptyList(),
             )
             return
@@ -161,28 +180,94 @@ class PlayerViewModel(
         viewModelScope.launch {
             val requestId = ++latestSearchRequestId
             searchState = searchState.copy(
+                activeQuery = query,
                 isLoading = true,
+                isLoadingMore = false,
                 hasSearched = true,
                 errorMessage = null,
+                loadMoreErrorMessage = null,
+                canLoadMore = false,
+                nextOffset = 0,
+                results = emptyList(),
             )
 
             runCatching {
                 withContext(Dispatchers.IO) {
-                    neteaseSearchRepository.searchTracks(query)
+                    neteaseSearchRepository.searchTracks(
+                        keyword = query,
+                        limit = SEARCH_PAGE_SIZE,
+                        offset = 0,
+                    )
                 }
             }.onSuccess { results ->
                 if (requestId != latestSearchRequestId) return@onSuccess
+                val normalizedResults = results.map(::normalizeTrack)
                 searchState = searchState.copy(
                     isLoading = false,
-                    results = results.map(::normalizeTrack),
+                    activeQuery = query,
+                    results = normalizedResults,
                     errorMessage = null,
+                    loadMoreErrorMessage = null,
+                    canLoadMore = results.size >= SEARCH_PAGE_SIZE,
+                    nextOffset = results.size,
                 )
             }.onFailure {
                 if (requestId != latestSearchRequestId) return@onFailure
                 searchState = searchState.copy(
+                    activeQuery = query,
                     isLoading = false,
+                    isLoadingMore = false,
                     results = emptyList(),
                     errorMessage = it.message ?: "搜索失败，请稍后重试",
+                    loadMoreErrorMessage = null,
+                    canLoadMore = false,
+                    nextOffset = 0,
+                )
+            }
+        }
+    }
+
+    fun loadMoreSearchTracks() {
+        val activeQuery = searchState.activeQuery.trim()
+        if (activeQuery.isBlank()) return
+        if (searchState.query.trim() != activeQuery) return
+        if (searchState.isLoading || searchState.isLoadingMore || !searchState.canLoadMore) return
+
+        val offset = searchState.nextOffset
+
+        viewModelScope.launch {
+            val requestId = ++latestSearchRequestId
+            searchState = searchState.copy(
+                isLoadingMore = true,
+                loadMoreErrorMessage = null,
+            )
+
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    neteaseSearchRepository.searchTracks(
+                        keyword = activeQuery,
+                        limit = SEARCH_PAGE_SIZE,
+                        offset = offset,
+                    )
+                }
+            }.onSuccess { results ->
+                if (requestId != latestSearchRequestId) return@onSuccess
+                val mergedResults = mergeSearchResults(
+                    existing = searchState.results,
+                    incoming = results.map(::normalizeTrack),
+                )
+                searchState = searchState.copy(
+                    isLoadingMore = false,
+                    results = mergedResults,
+                    loadMoreErrorMessage = null,
+                    canLoadMore = results.size >= SEARCH_PAGE_SIZE,
+                    nextOffset = offset + results.size,
+                )
+            }.onFailure {
+                if (requestId != latestSearchRequestId) return@onFailure
+                searchState = searchState.copy(
+                    isLoadingMore = false,
+                    loadMoreErrorMessage = it.message ?: "加载更多失败，请重试",
                 )
             }
         }
@@ -471,6 +556,25 @@ class PlayerViewModel(
         favoritesState = favoritesState.copy(
             tracks = favoritesState.tracks.map(::normalizeTrack),
         )
+    }
+
+    private fun mergeSearchResults(
+        existing: List<Track>,
+        incoming: List<Track>,
+    ): List<Track> {
+        if (incoming.isEmpty()) return existing
+
+        val seenIds = existing.mapNotNull { track ->
+            track.id.takeIf { it.isNotBlank() }
+        }.toMutableSet()
+        return buildList(existing.size + incoming.size) {
+            addAll(existing)
+            incoming.forEach { track ->
+                if (track.id.isBlank() || seenIds.add(track.id)) {
+                    add(track)
+                }
+            }
+        }
     }
 
     private fun emitPlayerCommand(command: PlayerCommand) {
