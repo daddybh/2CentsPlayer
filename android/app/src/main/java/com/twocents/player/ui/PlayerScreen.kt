@@ -6,9 +6,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
@@ -29,12 +32,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.twocents.player.data.Track
 import com.twocents.player.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -44,6 +51,7 @@ fun PlayerApp(
 ) {
     val state = viewModel.playbackState
     val track = state.currentTrack
+    val searchState = viewModel.searchState
 
     Scaffold(
         containerColor = DarkBackground,
@@ -57,7 +65,7 @@ fun PlayerApp(
                     )
                 },
                 actions = {
-                    IconButton(onClick = { /* TODO: open search */ }) {
+                    IconButton(onClick = viewModel::openSearch) {
                         Icon(
                             imageVector = Icons.Default.Search,
                             contentDescription = "搜索",
@@ -135,6 +143,27 @@ fun PlayerApp(
                 )
 
                 Spacer(modifier = Modifier.height(48.dp))
+            }
+        }
+
+        if (searchState.isVisible) {
+            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            ModalBottomSheet(
+                onDismissRequest = viewModel::closeSearch,
+                sheetState = sheetState,
+                containerColor = DarkCard,
+                dragHandle = {
+                    BottomSheetDefaults.DragHandle(color = TextTertiary)
+                },
+            ) {
+                SearchSheet(
+                    state = searchState,
+                    currentTrackId = track?.id,
+                    onQueryChange = viewModel::updateSearchQuery,
+                    onSearch = viewModel::searchTracks,
+                    onClose = viewModel::closeSearch,
+                    onSelectTrack = viewModel::selectTrack,
+                )
             }
         }
     }
@@ -341,6 +370,237 @@ private fun TrackInfo(
 }
 
 // ─── Progress Bar ───────────────────────────────────────────────────────────
+
+@Composable
+private fun SearchSheet(
+    state: SearchUiState,
+    currentTrackId: String?,
+    onQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onClose: () -> Unit,
+    onSelectTrack: (Track) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "搜索网易云音乐",
+                style = MaterialTheme.typography.titleLarge,
+                color = TextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onClose) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "关闭搜索",
+                    tint = TextSecondary,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = state.query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("输入歌名 / 歌手 / 专辑") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+            trailingIcon = {
+                IconButton(
+                    onClick = onSearch,
+                    enabled = state.query.isNotBlank() && !state.isLoading,
+                ) {
+                    if (state.isLoading) {
+                        CircularProgressIndicator(
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(20.dp),
+                            color = AccentPurple,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "执行搜索",
+                        )
+                    }
+                }
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = AccentPurple,
+                unfocusedBorderColor = DarkSurfaceVariant,
+                focusedLabelColor = AccentPurple,
+                cursorColor = AccentPurple,
+                focusedTextColor = TextPrimary,
+                unfocusedTextColor = TextPrimary,
+            ),
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        when {
+            state.errorMessage != null -> {
+                SearchFeedback(
+                    title = "搜索失败",
+                    body = state.errorMessage,
+                )
+            }
+
+            state.isLoading && state.results.isEmpty() -> {
+                SearchFeedback(
+                    title = "正在搜索",
+                    body = "稍等一下，正在从网易云网页端拉取结果。",
+                )
+            }
+
+            state.hasSearched && state.results.isEmpty() -> {
+                SearchFeedback(
+                    title = "没有找到结果",
+                    body = "换个关键词试试，比如歌名、歌手名或专辑名。",
+                )
+            }
+
+            state.results.isNotEmpty() -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items(state.results, key = { it.id }) { result ->
+                        SearchResultCard(
+                            track = result,
+                            isCurrentTrack = result.id == currentTrackId,
+                            onClick = { onSelectTrack(result) },
+                        )
+                    }
+                }
+            }
+
+            else -> {
+                SearchFeedback(
+                    title = "开始搜索",
+                    body = "这个入口已经接到网易云网页搜索，输入关键词后就能拿到歌曲列表。",
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+    }
+}
+
+@Composable
+private fun SearchFeedback(
+    title: String,
+    body: String,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = DarkSurface,
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
+            )
+            Text(
+                text = body,
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SearchResultCard(
+    track: Track,
+    isCurrentTrack: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(24.dp),
+        color = if (isCurrentTrack) DarkSurfaceVariant else DarkSurface,
+        tonalElevation = if (isCurrentTrack) 6.dp else 0.dp,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(AccentPurple.copy(alpha = 0.8f), AccentPink.copy(alpha = 0.8f)),
+                        )
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MusicNote,
+                    contentDescription = null,
+                    tint = Color.White,
+                )
+            }
+
+            Spacer(modifier = Modifier.width(14.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = track.artist,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (track.album.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = track.album,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Text(
+                text = formatTime(track.durationMs),
+                style = MaterialTheme.typography.labelMedium,
+                color = if (isCurrentTrack) AccentPurple else TextTertiary,
+            )
+        }
+    }
+}
 
 @Composable
 private fun ProgressBar(
