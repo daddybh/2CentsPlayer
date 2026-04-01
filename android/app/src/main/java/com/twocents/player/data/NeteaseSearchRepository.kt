@@ -15,6 +15,11 @@ class NeteaseSearchRepository(
         .build(),
 ) {
 
+    data class PlaybackDetails(
+        val audioUrl: String,
+        val durationMs: Long,
+    )
+
     fun searchTracks(
         keyword: String,
         limit: Int = 20,
@@ -35,6 +40,7 @@ class NeteaseSearchRepository(
             .addHeader("User-Agent", NETEASE_WEB_USER_AGENT)
             .addHeader("Referer", "https://music.163.com/")
             .addHeader("Origin", "https://music.163.com")
+            .addHeader("Cookie", NETEASE_WEB_COOKIE)
             .post(requestBody)
             .build()
 
@@ -87,9 +93,50 @@ class NeteaseSearchRepository(
         )
     }
 
+    fun resolvePlayableTrack(track: Track): Track {
+        if (track.audioUrl.isNotBlank() || track.id.isBlank()) return track
+        val playbackDetails = resolvePlaybackDetails(track.id) ?: return track
+        return track.copy(
+            audioUrl = playbackDetails.audioUrl,
+            durationMs = if (track.durationMs > 0) track.durationMs else playbackDetails.durationMs,
+        )
+    }
+
+    private fun resolvePlaybackDetails(trackId: String): PlaybackDetails? {
+        val request = Request.Builder()
+            .url("https://music.163.com/api/song/enhance/player/url?id=$trackId&ids=%5B$trackId%5D&br=320000")
+            .addHeader("User-Agent", NETEASE_WEB_USER_AGENT)
+            .addHeader("Referer", "https://music.163.com/")
+            .addHeader("Origin", "https://music.163.com")
+            .addHeader("Cookie", NETEASE_WEB_COOKIE)
+            .get()
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("网易云播放地址请求失败: HTTP ${response.code}")
+            }
+
+            val body = response.body?.string().orEmpty()
+            if (body.isBlank()) return null
+
+            val root = JSONObject(body)
+            val data = root.optJSONArray("data") ?: return null
+            val firstItem = data.optJSONObject(0) ?: return null
+            val resolvedUrl = firstItem.optString("url").orEmpty()
+            if (resolvedUrl.isBlank()) return null
+
+            return PlaybackDetails(
+                audioUrl = resolvedUrl.replace("http://", "https://"),
+                durationMs = firstItem.optLong("time"),
+            )
+        }
+    }
+
     private companion object {
         const val NETEASE_WEB_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+        const val NETEASE_WEB_COOKIE = "os=pc; appver=2.7.1.198277;"
     }
 }

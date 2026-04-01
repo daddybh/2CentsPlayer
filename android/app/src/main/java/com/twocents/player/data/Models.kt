@@ -23,4 +23,6 @@ data class PlaybackState(
     val currentPositionMs: Long = 0L,
     val playlist: List<Track> = emptyList(),
     val currentIndex: Int = 0,
+    val isPreparing: Boolean = false,
+    val statusMessage: String? = null,
 )

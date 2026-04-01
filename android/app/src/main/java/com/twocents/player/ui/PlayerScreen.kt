@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.BottomSheetDefaults
@@ -83,10 +84,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.twocents.player.data.Track
 import com.twocents.player.ui.theme.AccentCoral
 import com.twocents.player.ui.theme.AccentGold
@@ -114,6 +118,7 @@ fun PlayerApp(
 ) {
     val playbackState = viewModel.playbackState
     val searchState = viewModel.searchState
+    val favoritesState = viewModel.favoritesState
     val currentTrack = playbackState.currentTrack
     val orderedQueue = remember(playbackState.playlist, playbackState.currentIndex) {
         buildOrderedQueue(
@@ -121,6 +126,8 @@ fun PlayerApp(
             currentIndex = playbackState.currentIndex,
         )
     }
+
+    BindPlayer(viewModel)
 
     Box(
         modifier = Modifier
@@ -148,11 +155,14 @@ fun PlayerApp(
         ) {
             PlayerHeader(
                 queueCount = playbackState.playlist.size,
+                favoriteCount = favoritesState.tracks.size,
+                onOpenFavorites = viewModel::openFavorites,
                 onSearch = viewModel::openSearch,
             )
 
             HeroArtwork(
                 album = currentTrack?.album.orEmpty(),
+                coverUrl = currentTrack?.coverUrl.orEmpty(),
                 isPlaying = playbackState.isPlaying,
                 isFavorite = currentTrack?.isFavorite == true,
                 currentIndex = playbackState.currentIndex,
@@ -171,6 +181,7 @@ fun PlayerApp(
 
             InsightStrip(
                 isPlaying = playbackState.isPlaying,
+                isPreparing = playbackState.isPreparing,
                 currentMs = playbackState.currentPositionMs,
                 totalMs = currentTrack?.durationMs ?: 0L,
                 currentIndex = playbackState.currentIndex,
@@ -182,6 +193,8 @@ fun PlayerApp(
                 totalMs = currentTrack?.durationMs ?: 0L,
                 isPlaying = playbackState.isPlaying,
                 isFavorite = currentTrack?.isFavorite == true,
+                isPreparing = playbackState.isPreparing,
+                statusMessage = playbackState.statusMessage,
                 queueCount = playbackState.playlist.size,
                 onSeek = viewModel::seekTo,
                 onPlayPause = viewModel::togglePlayPause,
@@ -217,6 +230,30 @@ fun PlayerApp(
                 onSearch = viewModel::searchTracks,
                 onClose = viewModel::closeSearch,
                 onSelectTrack = viewModel::selectTrack,
+                onToggleFavorite = viewModel::toggleFavorite,
+            )
+        }
+    }
+
+    if (favoritesState.isVisible) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = viewModel::closeFavorites,
+            sheetState = sheetState,
+            containerColor = SurfacePrimary,
+            contentColor = TextPrimary,
+            dragHandle = {
+                BottomSheetDefaults.DragHandle(color = TextTertiary)
+            },
+        ) {
+            FavoritesSheet(
+                state = favoritesState,
+                currentTrackId = currentTrack?.id,
+                onClose = viewModel::closeFavorites,
+                onPlayAll = { viewModel.playFavoriteTracks(shuffle = false) },
+                onShufflePlay = { viewModel.playFavoriteTracks(shuffle = true) },
+                onSelectTrack = viewModel::selectFavoriteTrack,
+                onToggleFavorite = viewModel::toggleFavorite,
             )
         }
     }
@@ -280,6 +317,8 @@ private fun PlayerBackdrop(isPlaying: Boolean) {
 @Composable
 private fun PlayerHeader(
     queueCount: Int,
+    favoriteCount: Int,
+    onOpenFavorites: () -> Unit,
     onSearch: () -> Unit,
 ) {
     Row(
@@ -307,6 +346,11 @@ private fun PlayerHeader(
             MiniInfoPill(
                 icon = Icons.AutoMirrored.Filled.QueueMusic,
                 label = queueCount.toString(),
+            )
+            MiniInfoPill(
+                icon = Icons.Default.Favorite,
+                label = favoriteCount.toString(),
+                onClick = onOpenFavorites,
             )
             HeaderActionButton(
                 icon = Icons.Default.Search,
@@ -347,6 +391,7 @@ private fun HeaderActionButton(
 @Composable
 private fun HeroArtwork(
     album: String,
+    coverUrl: String,
     isPlaying: Boolean,
     isFavorite: Boolean,
     currentIndex: Int,
@@ -429,7 +474,7 @@ private fun HeroArtwork(
                     ) {
                         MetaChip(
                             icon = Icons.Default.Album,
-                            text = "VOL ${"%02d".format(currentIndex + 1)}",
+                            text = if (queueCount > 0) "VOL ${"%02d".format(currentIndex + 1)}" else "VOL --",
                         )
 
                         Surface(
@@ -463,11 +508,11 @@ private fun HeroArtwork(
                             .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.GraphicEq,
-                            contentDescription = null,
-                            tint = AccentMint,
-                            modifier = Modifier.size(44.dp),
+                        TrackArtwork(
+                            coverUrl = coverUrl,
+                            modifier = Modifier.fillMaxSize(),
+                            cornerRadius = 46.dp,
+                            fallbackTint = AccentMint,
                         )
                     }
 
@@ -602,7 +647,7 @@ private fun TrackHeadline(
             )
             MetaChip(
                 icon = Icons.AutoMirrored.Filled.QueueMusic,
-                text = "队列 ${currentIndex + 1}/${playlistSize.coerceAtLeast(1)}",
+                text = "队列 ${formatQueuePosition(currentIndex, playlistSize)}",
             )
             MetaChip(
                 icon = Icons.Default.GraphicEq,
@@ -645,6 +690,7 @@ private fun MetaChip(
 @Composable
 private fun InsightStrip(
     isPlaying: Boolean,
+    isPreparing: Boolean,
     currentMs: Long,
     totalMs: Long,
     currentIndex: Int,
@@ -658,7 +704,11 @@ private fun InsightStrip(
             modifier = Modifier.weight(1f),
             icon = Icons.Default.GraphicEq,
             label = "状态",
-            value = if (isPlaying) "播放中" else "暂停",
+            value = when {
+                isPreparing -> "准备中"
+                isPlaying -> "播放中"
+                else -> "暂停"
+            },
         )
         InsightCard(
             modifier = Modifier.weight(1f),
@@ -670,7 +720,7 @@ private fun InsightStrip(
             modifier = Modifier.weight(1f),
             icon = Icons.AutoMirrored.Filled.QueueMusic,
             label = "队列",
-            value = "${currentIndex + 1}/${playlistSize.coerceAtLeast(1)}",
+            value = formatQueuePosition(currentIndex, playlistSize),
         )
     }
 }
@@ -720,6 +770,8 @@ private fun PlaybackPanel(
     totalMs: Long,
     isPlaying: Boolean,
     isFavorite: Boolean,
+    isPreparing: Boolean,
+    statusMessage: String?,
     queueCount: Int,
     onSeek: (Long) -> Unit,
     onPlayPause: () -> Unit,
@@ -740,9 +792,9 @@ private fun PlaybackPanel(
                     color = TextPrimary,
                 )
                 Text(
-                    text = "进度、切歌和收藏都集中在这里。",
+                    text = statusMessage ?: if (isPreparing) "正在解析音频地址，请稍等一下。" else "进度、切歌和收藏都集中在这里。",
                     style = MaterialTheme.typography.bodySmall,
-                    color = TextTertiary,
+                    color = if (statusMessage != null) AccentGold else TextTertiary,
                 )
             }
             MiniInfoPill(
@@ -760,6 +812,7 @@ private fun PlaybackPanel(
         PlaybackControls(
             isPlaying = isPlaying,
             isFavorite = isFavorite,
+            isPreparing = isPreparing,
             onPlayPause = onPlayPause,
             onSkipNext = onSkipNext,
             onSkipPrevious = onSkipPrevious,
@@ -814,6 +867,7 @@ private fun ProgressBar(
 private fun PlaybackControls(
     isPlaying: Boolean,
     isFavorite: Boolean,
+    isPreparing: Boolean,
     onPlayPause: () -> Unit,
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit,
@@ -889,12 +943,20 @@ private fun PlaybackControls(
                     ),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "暂停" else "播放",
-                    tint = MidnightBackground,
-                    modifier = Modifier.size(42.dp),
-                )
+                if (isPreparing) {
+                    CircularProgressIndicator(
+                        color = MidnightBackground,
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(34.dp),
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "暂停" else "播放",
+                        tint = MidnightBackground,
+                        modifier = Modifier.size(42.dp),
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(14.dp))
@@ -912,7 +974,7 @@ private fun PlaybackControls(
 @Composable
 private fun CircleControlButton(
     icon: ImageVector,
-    size: androidx.compose.ui.unit.Dp,
+    size: Dp,
     contentDescription: String,
     onClick: () -> Unit,
 ) {
@@ -969,15 +1031,22 @@ private fun QueueSection(
             )
         }
 
-        queue.forEachIndexed { order, (trackIndex, track) ->
-            QueueRow(
-                track = track,
-                trackIndex = trackIndex,
-                isCurrent = trackIndex == currentIndex,
-                isPlaying = isPlaying,
-                order = order,
-                onClick = { onSelectTrack(trackIndex) },
+        if (queue.isEmpty()) {
+            SearchHintCard(
+                title = "队列还是空的",
+                body = "先搜一首歌或从收藏里播放，队列就会出现在这里。",
             )
+        } else {
+            queue.forEachIndexed { order, (trackIndex, track) ->
+                QueueRow(
+                    track = track,
+                    trackIndex = trackIndex,
+                    isCurrent = trackIndex == currentIndex,
+                    isPlaying = isPlaying,
+                    order = order,
+                    onClick = { onSelectTrack(trackIndex) },
+                )
+            }
         }
     }
 }
@@ -1112,6 +1181,7 @@ private fun SearchSheet(
     onSearch: () -> Unit,
     onClose: () -> Unit,
     onSelectTrack: (Track) -> Unit,
+    onToggleFavorite: (Track) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1225,6 +1295,7 @@ private fun SearchSheet(
                             track = result,
                             isCurrentTrack = result.id == currentTrackId,
                             onClick = { onSelectTrack(result) },
+                            onToggleFavorite = { onToggleFavorite(result) },
                         )
                     }
                 }
@@ -1276,6 +1347,7 @@ private fun SearchResultCard(
     track: Track,
     isCurrentTrack: Boolean,
     onClick: () -> Unit,
+    onToggleFavorite: () -> Unit,
 ) {
     val shape = RoundedCornerShape(24.dp)
     val backgroundBrush = if (isCurrentTrack) {
@@ -1311,26 +1383,12 @@ private fun SearchResultCard(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(52.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(
-                                AccentSky.copy(alpha = 0.9f),
-                                AccentMint.copy(alpha = 0.9f),
-                            ),
-                        ),
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Default.MusicNote,
-                    contentDescription = null,
-                    tint = MidnightBackground,
-                )
-            }
+            TrackArtwork(
+                coverUrl = track.coverUrl,
+                modifier = Modifier.size(56.dp),
+                cornerRadius = 18.dp,
+                fallbackTint = MidnightBackground,
+            )
 
             Spacer(modifier = Modifier.width(14.dp))
 
@@ -1364,12 +1422,220 @@ private fun SearchResultCard(
 
             Spacer(modifier = Modifier.width(12.dp))
 
-            Text(
-                text = formatTime(track.durationMs),
-                style = MaterialTheme.typography.labelMedium,
-                color = if (isCurrentTrack) AccentMint else TextTertiary,
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    modifier = Modifier.size(36.dp),
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.18f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable(onClick = onToggleFavorite),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = if (track.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = if (track.isFavorite) "取消收藏" else "加入收藏",
+                            tint = if (track.isFavorite) FavoriteRed else TextSecondary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = formatTime(track.durationMs),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isCurrentTrack) AccentMint else TextTertiary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FavoritesSheet(
+    state: FavoritesUiState,
+    currentTrackId: String?,
+    onClose: () -> Unit,
+    onPlayAll: () -> Unit,
+    onShufflePlay: () -> Unit,
+    onSelectTrack: (Track) -> Unit,
+    onToggleFavorite: (Track) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "我的收藏",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "把喜欢的歌单独拎出来，支持整组播放。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary,
+                )
+            }
+
+            IconButton(onClick = onClose) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "关闭收藏列表",
+                    tint = TextSecondary,
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            ActionPill(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.PlayArrow,
+                label = "播放全部",
+                onClick = onPlayAll,
+                enabled = state.tracks.isNotEmpty(),
+            )
+            ActionPill(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.Shuffle,
+                label = "随机播放",
+                onClick = onShufflePlay,
+                enabled = state.tracks.isNotEmpty(),
             )
         }
+
+        if (state.tracks.isEmpty()) {
+            SearchHintCard(
+                title = "收藏还是空的",
+                body = "在搜索结果或播放器里点一下爱心，就会出现在这里。",
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 460.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(state.tracks, key = { it.id }) { favorite ->
+                    SearchResultCard(
+                        track = favorite,
+                        isCurrentTrack = favorite.id == currentTrackId,
+                        onClick = { onSelectTrack(favorite) },
+                        onToggleFavorite = { onToggleFavorite(favorite) },
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+    }
+}
+
+@Composable
+private fun ActionPill(
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
+    Surface(
+        modifier = modifier,
+        shape = PillShape,
+        color = if (enabled) SurfaceSecondary.copy(alpha = 0.86f) else SurfaceSecondary.copy(alpha = 0.42f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+    ) {
+        Row(
+            modifier = Modifier
+                .clickable(enabled = enabled, onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (enabled) AccentMint else TextMuted,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (enabled) TextPrimary else TextMuted,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TrackArtwork(
+    coverUrl: String,
+    modifier: Modifier = Modifier,
+    cornerRadius: Dp = 18.dp,
+    fallbackTint: Color = MidnightBackground,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(cornerRadius))
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        AccentSky.copy(alpha = 0.88f),
+                        AccentMint.copy(alpha = 0.88f),
+                    ),
+                ),
+            ),
+    ) {
+        if (coverUrl.isNotBlank()) {
+            AsyncImage(
+                model = coverUrl,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MusicNote,
+                    contentDescription = null,
+                    tint = fallbackTint,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.10f),
+                        ),
+                    ),
+                ),
+        )
     }
 }
 
@@ -1377,6 +1643,7 @@ private fun SearchResultCard(
 private fun MiniInfoPill(
     icon: ImageVector,
     label: String,
+    onClick: (() -> Unit)? = null,
 ) {
     Surface(
         shape = PillShape,
@@ -1384,7 +1651,9 @@ private fun MiniInfoPill(
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier
+                .clickable(enabled = onClick != null, onClick = { onClick?.invoke() })
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1448,6 +1717,14 @@ private fun buildOrderedQueue(
         val index = (currentIndex + offset) % playlist.size
         index to playlist[index]
     }
+}
+
+private fun formatQueuePosition(
+    currentIndex: Int,
+    playlistSize: Int,
+): String {
+    if (playlistSize <= 0) return "0/0"
+    return "${currentIndex + 1}/${playlistSize}"
 }
 
 private fun formatTime(ms: Long): String {
