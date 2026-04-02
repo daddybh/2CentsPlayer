@@ -21,22 +21,46 @@ class PlayerViewModel(
 
     private companion object {
         const val SEARCH_PAGE_SIZE = 20
+        val LYRIC_TIMESTAMP_REGEX = Regex("""\[(\d{2}):(\d{2})(?:\.(\d{1,3}))?]""")
+        val LYRIC_CREDIT_ROLES = setOf(
+            "作词",
+            "作曲",
+            "编曲",
+            "制作人",
+            "和声编写",
+            "和声",
+            "吉他",
+            "贝斯",
+            "鼓",
+            "录音工程",
+            "录音助理",
+            "混音",
+            "母带",
+            "配唱制作人",
+            "人声编辑",
+            "监制",
+        )
     }
+
+    private data class LyricsContent(
+        val credits: List<LyricCredit>,
+        val lines: List<LyricLine>,
+    )
 
     private val neteaseSearchRepository = NeteaseSearchRepository()
     private val favoritesStore = FavoritesStore(application)
     private val shuffleRandom = Random(System.currentTimeMillis())
+    private val lyricsCache = mutableMapOf<String, LyricsContent>()
 
     private var latestSearchRequestId = 0L
     private var latestPlaybackRequestId = 0L
     private var latestPlayerCommandId = 0L
+    private var latestLyricsRequestId = 0L
 
     private val initialFavorites = favoritesStore.loadFavorites().map { it.copy(isFavorite = true) }
 
     var playbackState by mutableStateOf(
-        PlaybackState(
-            statusMessage = "搜索一首歌，播放器就会开始真正播放。",
-        ),
+        PlaybackState(),
     )
         private set
 
@@ -44,6 +68,9 @@ class PlayerViewModel(
         private set
 
     var favoritesState by mutableStateOf(FavoritesUiState(tracks = initialFavorites))
+        private set
+
+    var lyricsState by mutableStateOf(LyricsUiState())
         private set
 
     var pendingPlayerCommand by mutableStateOf<PlayerCommand?>(null)
@@ -128,6 +155,7 @@ class PlayerViewModel(
 
     fun openSearch() {
         favoritesState = favoritesState.copy(isVisible = false)
+        lyricsState = lyricsState.copy(isVisible = false)
         searchState = searchState.copy(isVisible = true)
     }
 
@@ -137,11 +165,21 @@ class PlayerViewModel(
 
     fun openFavorites() {
         searchState = searchState.copy(isVisible = false)
+        lyricsState = lyricsState.copy(isVisible = false)
         favoritesState = favoritesState.copy(isVisible = true)
     }
 
     fun closeFavorites() {
         favoritesState = favoritesState.copy(isVisible = false)
+    }
+
+    fun openLyricsScreen() {
+        lyricsState = lyricsState.copy(isVisible = true)
+        loadLyricsForCurrentTrack()
+    }
+
+    fun closeLyricsScreen() {
+        lyricsState = lyricsState.copy(isVisible = false)
     }
 
     fun updateSearchQuery(query: String) {
@@ -393,6 +431,10 @@ class PlayerViewModel(
             isPreparing = false,
             statusMessage = null,
         )
+
+        if (lyricsState.isVisible && lyricsState.trackId != updatedTrack.id) {
+            loadLyricsForTrack(updatedTrack)
+        }
     }
 
     fun onPlayerError(message: String?) {
@@ -422,6 +464,7 @@ class PlayerViewModel(
 
         val normalizedQueue = queue.map(::normalizeTrack)
         val targetTrack = normalizedQueue[index]
+        val queueForResolution = normalizedQueue.map { it.copy(audioUrl = "") }
         val requestId = ++latestPlaybackRequestId
 
         playbackState = playbackState.copy(
@@ -434,20 +477,10 @@ class PlayerViewModel(
             statusMessage = "正在准备播放 ${targetTrack.title}...",
         )
 
-        if (normalizedQueue.all { it.audioUrl.isNotBlank() }) {
-            commitPlayableQueue(
-                queue = normalizedQueue,
-                index = index,
-                playWhenReady = playWhenReady,
-                startPositionMs = startPositionMs,
-            )
-            return
-        }
-
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    neteaseSearchRepository.resolvePlayableTracks(normalizedQueue)
+                    neteaseSearchRepository.resolvePlayableTracks(queueForResolution)
                 }
             }.onSuccess { resolvedQueue ->
                 if (requestId != latestPlaybackRequestId) return@onSuccess
@@ -504,6 +537,9 @@ class PlayerViewModel(
             isPreparing = false,
             statusMessage = null,
         )
+        if (lyricsState.isVisible) {
+            loadLyricsForTrack(currentTrack)
+        }
         emitPlayerCommand(
             PlayerCommand.LoadTrack(
                 id = nextPlayerCommandId(),
@@ -575,6 +611,170 @@ class PlayerViewModel(
                 }
             }
         }
+    }
+
+    private fun loadLyricsForCurrentTrack(force: Boolean = false) {
+        val currentTrack = playbackState.currentTrack
+        if (currentTrack == null) {
+            lyricsState = lyricsState.copy(
+                isVisible = true,
+                trackId = null,
+                isLoading = false,
+                credits = emptyList(),
+                lines = emptyList(),
+                errorMessage = "先选择一首歌再看歌词。",
+            )
+            return
+        }
+
+        loadLyricsForTrack(currentTrack, force)
+    }
+
+    private fun loadLyricsForTrack(
+        track: Track,
+        force: Boolean = false,
+    ) {
+        if (track.id.isBlank()) {
+            lyricsState = lyricsState.copy(
+                isVisible = true,
+                trackId = null,
+                isLoading = false,
+                credits = emptyList(),
+                lines = emptyList(),
+                errorMessage = "当前歌曲没有歌词信息。",
+            )
+            return
+        }
+
+        if (!force) {
+            lyricsCache[track.id]?.let { cachedLyrics ->
+                lyricsState = lyricsState.copy(
+                    isVisible = true,
+                    trackId = track.id,
+                    isLoading = false,
+                    credits = cachedLyrics.credits,
+                    lines = cachedLyrics.lines,
+                    errorMessage = if (cachedLyrics.lines.isEmpty()) "暂无歌词" else null,
+                )
+                return
+            }
+        }
+
+        val requestId = ++latestLyricsRequestId
+        lyricsState = lyricsState.copy(
+            isVisible = true,
+            trackId = track.id,
+            isLoading = true,
+            credits = emptyList(),
+            lines = emptyList(),
+            errorMessage = null,
+        )
+
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    neteaseSearchRepository.fetchLyrics(track.id)
+                }
+            }.onSuccess { rawLyrics ->
+                if (requestId != latestLyricsRequestId) return@onSuccess
+                val content = parseLyricsContent(rawLyrics.orEmpty())
+                lyricsCache[track.id] = content
+                lyricsState = lyricsState.copy(
+                    isVisible = true,
+                    trackId = track.id,
+                    isLoading = false,
+                    credits = content.credits,
+                    lines = content.lines,
+                    errorMessage = if (content.lines.isEmpty()) "暂无歌词" else null,
+                )
+            }.onFailure {
+                if (requestId != latestLyricsRequestId) return@onFailure
+                lyricsState = lyricsState.copy(
+                    isVisible = true,
+                    trackId = track.id,
+                    isLoading = false,
+                    credits = emptyList(),
+                    lines = emptyList(),
+                    errorMessage = it.message ?: "歌词加载失败，请稍后重试。",
+                )
+            }
+        }
+    }
+
+    private fun parseLyricsContent(rawLyrics: String): LyricsContent {
+        if (rawLyrics.isBlank()) return LyricsContent(emptyList(), emptyList())
+
+        val parsedLines = rawLyrics
+            .lineSequence()
+            .flatMap { rawLine ->
+                val text = rawLine.replace(LYRIC_TIMESTAMP_REGEX, "").trim()
+                if (text.isBlank()) return@flatMap emptySequence()
+
+                val timestamps = LYRIC_TIMESTAMP_REGEX.findAll(rawLine).toList()
+                if (timestamps.isEmpty()) return@flatMap emptySequence()
+
+                timestamps.asSequence().map { match ->
+                    LyricLine(
+                        timestampMs = parseTimestampMs(match),
+                        text = text,
+                    )
+                }
+            }
+            .sortedBy { it.timestampMs }
+            .toList()
+
+        if (parsedLines.isEmpty()) return LyricsContent(emptyList(), emptyList())
+
+        val credits = mutableListOf<LyricCredit>()
+        val lyricLines = mutableListOf<LyricLine>()
+        var collectingCredits = true
+
+        parsedLines.forEach { line ->
+            val credit = line.toLyricCredit()
+            if (collectingCredits && credit != null) {
+                credits += credit
+            } else {
+                collectingCredits = false
+                lyricLines += line
+            }
+        }
+
+        val fallbackLines = if (lyricLines.isEmpty()) {
+            parsedLines.filter { it.toLyricCredit() == null }
+        } else {
+            lyricLines
+        }
+
+        return LyricsContent(
+            credits = credits.take(4),
+            lines = fallbackLines,
+        )
+    }
+
+    private fun parseTimestampMs(match: MatchResult): Long {
+        val minutes = match.groupValues.getOrNull(1)?.toLongOrNull() ?: 0L
+        val seconds = match.groupValues.getOrNull(2)?.toLongOrNull() ?: 0L
+        val rawFraction = match.groupValues.getOrNull(3).orEmpty()
+        val fractionMs = when (rawFraction.length) {
+            1 -> rawFraction.toLongOrNull()?.times(100L) ?: 0L
+            2 -> rawFraction.toLongOrNull()?.times(10L) ?: 0L
+            else -> rawFraction.take(3).toLongOrNull() ?: 0L
+        }
+        return (minutes * 60_000L) + (seconds * 1_000L) + fractionMs
+    }
+
+    private fun LyricLine.toLyricCredit(): LyricCredit? {
+        val separatorIndex = text.indexOfAny(charArrayOf(':', '：'))
+        if (separatorIndex <= 0 || separatorIndex >= text.lastIndex) return null
+
+        val role = text.substring(0, separatorIndex).trim().replace(" ", "")
+        val name = text.substring(separatorIndex + 1).trim()
+        if (role !in LYRIC_CREDIT_ROLES || name.isBlank()) return null
+
+        return LyricCredit(
+            role = role,
+            name = name,
+        )
     }
 
     private fun emitPlayerCommand(command: PlayerCommand) {
