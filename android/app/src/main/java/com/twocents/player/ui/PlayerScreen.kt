@@ -415,9 +415,9 @@ private fun HeroArtwork(
     )
 
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val coverSize = (maxWidth * 0.72f).coerceIn(224.dp, 304.dp)
-        val discSize = (coverSize * 0.82f).coerceIn(180.dp, 240.dp)
-        val cardHeight = coverSize + 212.dp
+        val coverSize = (maxWidth * 0.34f).coerceIn(116.dp, 142.dp)
+        val discSize = (coverSize * 1.2f).coerceIn(136.dp, 176.dp)
+        val cardHeight = coverSize + 218.dp
 
         Box(
             modifier = Modifier
@@ -428,7 +428,7 @@ private fun HeroArtwork(
                 modifier = Modifier
                     .size(discSize)
                     .align(Alignment.TopEnd)
-                    .offset(x = (-8).dp, y = 24.dp)
+                    .offset(x = (-10).dp, y = 22.dp)
                     .graphicsLayer {
                         rotationZ = if (motionEnabled && isPlaying) discRotation else 0f
                     },
@@ -437,8 +437,8 @@ private fun HeroArtwork(
 
             Box(
                 modifier = Modifier
-                    .size(coverSize)
                     .height(cardHeight)
+                    .fillMaxWidth()
                     .align(Alignment.CenterStart)
                     .shadow(24.dp, HeroShape)
                     .clip(HeroShape)
@@ -474,8 +474,8 @@ private fun HeroArtwork(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         MetaChip(
-                            icon = Icons.Default.Album,
-                            text = if (queueCount > 0) "VOL ${"%02d".format(currentIndex + 1)}" else "VOL --",
+                            icon = Icons.AutoMirrored.Filled.QueueMusic,
+                            text = if (queueCount > 0) "SET ${formatQueuePosition(currentIndex, queueCount)}" else "SINGLE",
                         )
 
                         Surface(
@@ -499,45 +499,65 @@ private fun HeroArtwork(
                         }
                     }
 
-                    Spacer(modifier = Modifier.weight(1f))
-
-                    Box(
-                        modifier = Modifier
-                            .size(92.dp)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.08f))
-                            .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        TrackArtwork(
-                            coverUrl = coverUrl,
-                            modifier = Modifier.fillMaxSize(),
-                            cornerRadius = 46.dp,
-                            fallbackTint = AccentMint,
-                        )
-                    }
-
                     Spacer(modifier = Modifier.height(18.dp))
 
-                    Text(
-                        text = album.ifBlank { "Tonight's Selection" },
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = TextPrimary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(coverSize)
+                                .clip(RoundedCornerShape(30.dp))
+                                .background(Color.White.copy(alpha = 0.08f))
+                                .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(30.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            TrackArtwork(
+                                coverUrl = coverUrl,
+                                modifier = Modifier.fillMaxSize(),
+                                cornerRadius = 30.dp,
+                                fallbackTint = AccentMint,
+                            )
+                        }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = "NOW SPINNING",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = AccentMint.copy(alpha = 0.9f),
+                            )
 
-                    Text(
-                        text = statusMessage ?: if (isPreparing) "正在解析音频地址，请稍等一下。" else "主卡片里直接完成进度拖动和切歌控制。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (statusMessage != null) AccentGold else TextTertiary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                            Text(
+                                text = album.ifBlank { "Tonight's Selection" },
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = TextPrimary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                            MetaChip(
+                                icon = Icons.Default.Album,
+                                text = if (queueCount > 0) "VOL ${"%02d".format(currentIndex + 1)}" else "VOL --",
+                            )
+
+                            if (statusMessage != null || isPreparing) {
+                                Text(
+                                    text = statusMessage ?: "正在解析音频地址，请稍等一下。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (statusMessage != null) AccentGold else TextTertiary,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.weight(1f))
 
                     ProgressBar(
                         currentMs = currentMs,
@@ -545,7 +565,7 @@ private fun HeroArtwork(
                         onSeek = onSeek,
                     )
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     PlaybackControls(
                         isPlaying = isPlaying,
@@ -865,59 +885,68 @@ private fun PlaybackControls(
         label = "play_button_scale",
     )
 
-    Row(
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        shape = FrameShape,
+        color = Color.Black.copy(alpha = 0.16f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
     ) {
-        SquareControlButton(
-            icon = Icons.Default.SkipPrevious,
-            modifier = Modifier.weight(1f),
-            contentDescription = "上一曲",
-            onClick = onSkipPrevious,
-        )
-
-        Box(
+        Row(
             modifier = Modifier
-                .weight(1.18f)
-                .height(76.dp)
-                .scale(playScale)
-                .shadow(18.dp, ControlShape)
-                .clip(ControlShape)
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(AccentMint, AccentSky),
-                    ),
-                )
-                .border(1.dp, Color.White.copy(alpha = 0.14f), ControlShape)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onPlayPause,
-                ),
-            contentAlignment = Alignment.Center,
+                .fillMaxWidth()
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (isPreparing) {
-                CircularProgressIndicator(
-                    color = MidnightBackground,
-                    strokeWidth = 3.dp,
-                    modifier = Modifier.size(34.dp),
-                )
-            } else {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "暂停" else "播放",
-                    tint = MidnightBackground,
-                    modifier = Modifier.size(40.dp),
-                )
+            SquareControlButton(
+                icon = Icons.Default.SkipPrevious,
+                modifier = Modifier.weight(1f),
+                contentDescription = "上一曲",
+                onClick = onSkipPrevious,
+            )
+
+            Box(
+                modifier = Modifier
+                    .weight(1.18f)
+                    .height(76.dp)
+                    .scale(playScale)
+                    .shadow(18.dp, ControlShape)
+                    .clip(ControlShape)
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(AccentMint, AccentSky),
+                        ),
+                    )
+                    .border(1.dp, Color.White.copy(alpha = 0.14f), ControlShape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onPlayPause,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (isPreparing) {
+                    CircularProgressIndicator(
+                        color = MidnightBackground,
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(34.dp),
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "暂停" else "播放",
+                        tint = MidnightBackground,
+                        modifier = Modifier.size(40.dp),
+                    )
+                }
             }
+            SquareControlButton(
+                icon = Icons.Default.SkipNext,
+                modifier = Modifier.weight(1f),
+                contentDescription = "下一曲",
+                onClick = onSkipNext,
+            )
         }
-        SquareControlButton(
-            icon = Icons.Default.SkipNext,
-            modifier = Modifier.weight(1f),
-            contentDescription = "下一曲",
-            onClick = onSkipNext,
-        )
     }
 }
 
