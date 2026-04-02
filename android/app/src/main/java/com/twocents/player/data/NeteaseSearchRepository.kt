@@ -1,11 +1,11 @@
 package com.twocents.player.data
-
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.math.max
 
 class NeteaseSearchRepository(
     private val client: OkHttpClient = OkHttpClient.Builder()
@@ -18,6 +18,7 @@ class NeteaseSearchRepository(
     data class PlaybackDetails(
         val audioUrl: String,
         val durationMs: Long,
+        val isPreviewOnly: Boolean,
     )
 
     fun searchTracks(
@@ -71,6 +72,31 @@ class NeteaseSearchRepository(
         }
     }
 
+    fun fetchLyrics(trackId: String): String? {
+        if (trackId.isBlank()) return null
+
+        val request = Request.Builder()
+            .url("https://music.163.com/api/song/lyric?id=$trackId&lv=1&kv=1&tv=-1")
+            .addHeader("User-Agent", NETEASE_WEB_USER_AGENT)
+            .addHeader("Referer", "https://music.163.com/")
+            .addHeader("Origin", "https://music.163.com")
+            .addHeader("Cookie", NETEASE_WEB_COOKIE)
+            .get()
+            .build()
+
+        return client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("网易云歌词请求失败: HTTP ${response.code}")
+            }
+
+            val body = response.body?.string().orEmpty()
+            if (body.isBlank()) return@use null
+
+            val root = runCatching { JSONObject(body) }.getOrNull() ?: return@use null
+            root.optJSONObject("lrc")?.optString("lyric")?.takeIf { it.isNotBlank() }
+        }
+    }
+
     private fun JSONObject.toTrack(): Track {
         val artistsJson = optJSONArray("ar")
         val artists = buildList {
@@ -94,11 +120,11 @@ class NeteaseSearchRepository(
     }
 
     fun resolvePlayableTrack(track: Track): Track {
-        if (track.audioUrl.isNotBlank() || track.id.isBlank()) return track
+        if (track.id.isBlank()) return track
         val playbackDetails = resolvePlaybackDetails(track.id) ?: return track
         return track.copy(
             audioUrl = playbackDetails.audioUrl,
-            durationMs = if (track.durationMs > 0) track.durationMs else playbackDetails.durationMs,
+            durationMs = playbackDetails.durationMs.takeIf { it > 0 } ?: track.durationMs,
         )
     }
 
@@ -111,12 +137,12 @@ class NeteaseSearchRepository(
         val playbackDetailsById = resolvePlaybackDetails(trackIds)
         return tracks.map { track ->
             val playbackDetails = playbackDetailsById[track.id]
-            if (track.audioUrl.isNotBlank() || playbackDetails == null) {
+            if (playbackDetails == null) {
                 track
             } else {
                 track.copy(
                     audioUrl = playbackDetails.audioUrl,
-                    durationMs = if (track.durationMs > 0) track.durationMs else playbackDetails.durationMs,
+                    durationMs = playbackDetails.durationMs.takeIf { it > 0 } ?: track.durationMs,
                 )
             }
         }
@@ -127,6 +153,27 @@ class NeteaseSearchRepository(
     }
 
     private fun resolvePlaybackDetails(trackIds: List<String>): Map<String, PlaybackDetails> {
+        if (trackIds.isEmpty()) return emptyMap()
+
+        val officialPlaybackDetails = resolveOfficialPlaybackDetails(trackIds)
+        val fallbackTrackIds = trackIds.filter { trackId ->
+            val details = officialPlaybackDetails[trackId]
+            details == null || details.isPreviewOnly
+        }
+        if (fallbackTrackIds.isEmpty()) return officialPlaybackDetails
+
+        val fallbackPlaybackDetails = resolveThirdPartyPlaybackDetails(fallbackTrackIds)
+        return buildMap(trackIds.size) {
+            trackIds.forEach { trackId ->
+                val preferredDetails = fallbackPlaybackDetails[trackId] ?: officialPlaybackDetails[trackId]
+                if (preferredDetails != null) {
+                    put(trackId, preferredDetails)
+                }
+            }
+        }
+    }
+
+    private fun resolveOfficialPlaybackDetails(trackIds: List<String>): Map<String, PlaybackDetails> {
         if (trackIds.isEmpty()) return emptyMap()
 
         val joinedIds = trackIds.joinToString(separator = ",")
@@ -162,10 +209,121 @@ class NeteaseSearchRepository(
                         PlaybackDetails(
                             audioUrl = resolvedUrl.replace("http://", "https://"),
                             durationMs = item.optLong("time"),
+                            isPreviewOnly = item.optJSONObject("freeTrialInfo") != null,
                         ),
                     )
                 }
             }
+        }
+    }
+
+    private fun resolveThirdPartyPlaybackDetails(trackIds: List<String>): Map<String, PlaybackDetails> {
+        return buildMap(trackIds.size) {
+            trackIds.forEach { trackId ->
+                resolveThirdPartyPlaybackDetails(trackId)?.let { put(trackId, it) }
+            }
+        }
+    }
+
+    private fun resolveThirdPartyPlaybackDetails(trackId: String): PlaybackDetails? {
+        return resolveCunyuPlaybackDetails(trackId) ?: resolveCggPlaybackDetails(trackId)
+    }
+
+    private fun resolveCunyuPlaybackDetails(trackId: String): PlaybackDetails? {
+        return runCatching {
+            val request = Request.Builder()
+                .url("https://www.cunyuapi.top/163music_play?id=$trackId&quality=standard")
+                .addHeader("User-Agent", NETEASE_WEB_USER_AGENT)
+                .addHeader("Referer", "https://music.163.com/")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+
+                val body = response.body?.string().orEmpty()
+                if (body.isBlank()) return@use null
+
+                val root = runCatching { JSONObject(body) }.getOrNull()
+                if (root == null) return@use null
+
+                val resolvedUrl = root.optString("song_file_url").orEmpty()
+                if (resolvedUrl.isBlank()) return@use null
+
+                PlaybackDetails(
+                    audioUrl = resolvedUrl.replace("http://", "https://"),
+                    durationMs = extractDurationMsFromLyric(root.optString("lyric")),
+                    isPreviewOnly = false,
+                )
+            }
+        }.getOrNull()
+    }
+
+    private fun resolveCggPlaybackDetails(trackId: String): PlaybackDetails? {
+        return runCatching {
+            val request = Request.Builder()
+                .url("https://api-v2.cenguigui.cn/api/netease/music_v1.php?id=$trackId&type=json&level=standard")
+                .addHeader("User-Agent", NETEASE_WEB_USER_AGENT)
+                .addHeader("Referer", "https://music.163.com/")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+
+                val body = response.body?.string().orEmpty()
+                if (body.isBlank()) return@use null
+
+                val root = runCatching { JSONObject(body) }.getOrNull()
+                if (root == null) return@use null
+
+                val data = root.optJSONObject("data")
+                if (data == null) return@use null
+
+                val resolvedUrl = data.optString("url").orEmpty()
+                if (resolvedUrl.isBlank()) return@use null
+
+                PlaybackDetails(
+                    audioUrl = resolvedUrl.replace("http://", "https://"),
+                    durationMs = parseClockDurationMs(data.optString("duration")),
+                    isPreviewOnly = false,
+                )
+            }
+        }.getOrNull()
+    }
+
+    private fun extractDurationMsFromLyric(lyric: String): Long {
+        if (lyric.isBlank()) return 0L
+
+        var maxDurationMs = 0L
+        TIMESTAMP_REGEX.findAll(lyric).forEach { match ->
+            val minutes = match.groupValues.getOrNull(1)?.toLongOrNull() ?: return@forEach
+            val seconds = match.groupValues.getOrNull(2)?.toLongOrNull() ?: return@forEach
+            val fractionRaw = match.groupValues.getOrNull(3).orEmpty()
+            val milliseconds = when (fractionRaw.length) {
+                0 -> 0L
+                1 -> fractionRaw.toLongOrNull()?.times(100L) ?: 0L
+                2 -> fractionRaw.toLongOrNull()?.times(10L) ?: 0L
+                else -> fractionRaw.take(3).toLongOrNull() ?: 0L
+            }
+            val timestampMs = minutes * 60_000L + seconds * 1_000L + milliseconds
+            maxDurationMs = max(maxDurationMs, timestampMs)
+        }
+
+        return maxDurationMs
+    }
+
+    private fun parseClockDurationMs(durationText: String): Long {
+        if (durationText.isBlank()) return 0L
+
+        val parts = durationText.split(':')
+            .mapNotNull { it.trim().toLongOrNull() }
+        if (parts.isEmpty()) return 0L
+
+        return when (parts.size) {
+            3 -> parts[0] * 3_600_000L + parts[1] * 60_000L + parts[2] * 1_000L
+            2 -> parts[0] * 60_000L + parts[1] * 1_000L
+            else -> parts[0] * 1_000L
         }
     }
 
@@ -174,5 +332,6 @@ class NeteaseSearchRepository(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
         const val NETEASE_WEB_COOKIE = "os=pc; appver=2.7.1.198277;"
+        val TIMESTAMP_REGEX = Regex("""\[(\d+):(\d{2})(?:\.(\d{1,3}))?]""")
     }
 }
