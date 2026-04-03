@@ -1,10 +1,15 @@
 package com.twocents.player.data
+
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
 import kotlin.math.max
 
 class NeteaseSearchRepository(
@@ -72,6 +77,40 @@ class NeteaseSearchRepository(
         }
     }
 
+    fun findBestMatchTrack(
+        title: String,
+        artist: String = "",
+    ): Track? {
+        val trimmedTitle = title.trim()
+        val trimmedArtist = artist.trim()
+        if (trimmedTitle.isBlank()) return null
+
+        val query = listOf(trimmedTitle, trimmedArtist)
+            .filter { it.isNotBlank() }
+            .joinToString(separator = " ")
+
+        val candidates = buildList {
+            addAll(searchTracks(query, limit = MATCH_LIMIT))
+            if (trimmedArtist.isNotBlank()) {
+                addAll(searchTracks(trimmedTitle, limit = MATCH_LIMIT))
+            }
+        }.distinctBy { it.id }
+
+        if (candidates.isEmpty()) return null
+
+        return candidates
+            .map { candidate ->
+                candidate to scoreTrackMatch(
+                    track = candidate,
+                    title = trimmedTitle,
+                    artist = trimmedArtist,
+                )
+            }
+            .maxByOrNull { it.second }
+            ?.takeIf { it.second > 0 }
+            ?.first
+    }
+
     fun fetchLyrics(trackId: String): String? {
         if (trackId.isBlank()) return null
 
@@ -119,6 +158,42 @@ class NeteaseSearchRepository(
         )
     }
 
+    private fun scoreTrackMatch(
+        track: Track,
+        title: String,
+        artist: String,
+    ): Int {
+        val expectedTitle = title.normalizedForMatch()
+        val expectedArtist = artist.normalizedForMatch()
+        val actualTitle = track.title.normalizedForMatch()
+        val actualArtist = track.artist.normalizedForMatch()
+
+        var score = 0
+
+        when {
+            actualTitle == expectedTitle -> score += 120
+            actualTitle.contains(expectedTitle) || expectedTitle.contains(actualTitle) -> score += 75
+        }
+
+        if (expectedArtist.isNotBlank()) {
+            when {
+                actualArtist == expectedArtist -> score += 85
+                actualArtist.contains(expectedArtist) || expectedArtist.contains(actualArtist) -> score += 50
+            }
+        } else {
+            score += 5
+        }
+
+        if (track.durationMs > 60_000L) score += 10
+        if (track.coverUrl.isNotBlank()) score += 5
+
+        return score
+    }
+
+    private fun String.normalizedForMatch(): String {
+        return lowercase().filter { it.isLetterOrDigit() }
+    }
+
     fun resolvePlayableTrack(track: Track): Track {
         if (track.id.isBlank()) return track
         val playbackDetails = resolvePlaybackDetails(track.id) ?: return track
@@ -155,7 +230,9 @@ class NeteaseSearchRepository(
     private fun resolvePlaybackDetails(trackIds: List<String>): Map<String, PlaybackDetails> {
         if (trackIds.isEmpty()) return emptyMap()
 
-        val officialPlaybackDetails = resolveOfficialPlaybackDetails(trackIds)
+        val officialPlaybackDetails = runCatching {
+            resolveOfficialPlaybackDetails(trackIds)
+        }.getOrDefault(emptyMap())
         val fallbackTrackIds = trackIds.filter { trackId ->
             val details = officialPlaybackDetails[trackId]
             details == null || details.isPreviewOnly
@@ -176,14 +253,30 @@ class NeteaseSearchRepository(
     private fun resolveOfficialPlaybackDetails(trackIds: List<String>): Map<String, PlaybackDetails> {
         if (trackIds.isEmpty()) return emptyMap()
 
-        val joinedIds = trackIds.joinToString(separator = ",")
+        val payloadJson = JSONObject().apply {
+            put(
+                "ids",
+                JSONArray().apply {
+                    trackIds.forEach { trackId ->
+                        put(trackId.toLongOrNull() ?: trackId)
+                    }
+                },
+            )
+            put("level", OFFICIAL_PLAYBACK_LEVEL)
+            put("encodeType", "flac")
+            put("header", buildOfficialPlaybackHeader())
+        }.toString()
+
+        val requestBody = FormBody.Builder()
+            .add("params", encryptEapiParams(OFFICIAL_PLAYBACK_URL, payloadJson))
+            .build()
         val request = Request.Builder()
-            .url("https://music.163.com/api/song/enhance/player/url?id=${trackIds.first()}&ids=%5B$joinedIds%5D&br=320000")
+            .url(OFFICIAL_PLAYBACK_URL)
             .addHeader("User-Agent", NETEASE_WEB_USER_AGENT)
             .addHeader("Referer", "https://music.163.com/")
             .addHeader("Origin", "https://music.163.com")
-            .addHeader("Cookie", NETEASE_WEB_COOKIE)
-            .get()
+            .addHeader("Cookie", NETEASE_EAPI_COOKIE)
+            .post(requestBody)
             .build()
 
         client.newCall(request).execute().use { response ->
@@ -214,6 +307,46 @@ class NeteaseSearchRepository(
                     )
                 }
             }
+        }
+    }
+
+    private fun buildOfficialPlaybackHeader(): String {
+        return JSONObject().apply {
+            put("os", "pc")
+            put("appver", "2.7.1.198277")
+            put("osver", "")
+            put("deviceId", NETEASE_EAPI_DEVICE_ID)
+            put("requestId", System.currentTimeMillis().toString())
+        }.toString()
+    }
+
+    private fun encryptEapiParams(
+        url: String,
+        payloadJson: String,
+    ): String {
+        val urlPath = url.substringAfter("://").substringAfter('/').substringBefore('?')
+            .let { "/$it" }
+            .replace("/eapi/", "/api/")
+        val digest = md5Hex("nobody${urlPath}use${payloadJson}md5forencrypt")
+        val params = "$urlPath-36cd479b6b5-$payloadJson-36cd479b6b5-$digest"
+
+        val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+        cipher.init(
+            Cipher.ENCRYPT_MODE,
+            SecretKeySpec(EAPI_AES_KEY.toByteArray(Charsets.UTF_8), "AES"),
+        )
+        return cipher.doFinal(params.toByteArray(Charsets.UTF_8)).toHexString()
+    }
+
+    private fun md5Hex(text: String): String {
+        return MessageDigest.getInstance("MD5")
+            .digest(text.toByteArray(Charsets.UTF_8))
+            .toHexString()
+    }
+
+    private fun ByteArray.toHexString(): String {
+        return joinToString(separator = "") { byte ->
+            "%02x".format(byte.toInt() and 0xff)
         }
     }
 
@@ -328,10 +461,16 @@ class NeteaseSearchRepository(
     }
 
     private companion object {
+        const val MATCH_LIMIT = 8
+        const val OFFICIAL_PLAYBACK_LEVEL = "standard"
+        const val OFFICIAL_PLAYBACK_URL = "https://interface3.music.163.com/eapi/song/enhance/player/url/v1"
+        const val NETEASE_EAPI_DEVICE_ID = "pyncm!"
         const val NETEASE_WEB_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
         const val NETEASE_WEB_COOKIE = "os=pc; appver=2.7.1.198277;"
+        const val NETEASE_EAPI_COOKIE = "os=pc; appver=2.7.1.198277; osver=; deviceId=$NETEASE_EAPI_DEVICE_ID;"
+        const val EAPI_AES_KEY = "e82ckenh8dichen8"
         val TIMESTAMP_REGEX = Regex("""\[(\d+):(\d{2})(?:\.(\d{1,3}))?]""")
     }
 }

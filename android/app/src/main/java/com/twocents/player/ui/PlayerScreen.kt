@@ -56,7 +56,9 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -91,6 +93,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -130,6 +134,8 @@ fun PlayerApp(
     val searchState = viewModel.searchState
     val favoritesState = viewModel.favoritesState
     val lyricsState = viewModel.lyricsState
+    val aiSettingsState = viewModel.aiSettingsState
+    val aiRecommendationState = viewModel.aiRecommendationState
     val currentTrack = playbackState.currentTrack
     val orderedQueue = remember(playbackState.playlist, playbackState.currentIndex) {
         buildOrderedQueue(
@@ -167,6 +173,7 @@ fun PlayerApp(
             PlayerHeader(
                 favoriteCount = favoritesState.tracks.size,
                 onOpenFavorites = viewModel::openFavorites,
+                onOpenAiSettings = viewModel::openAiSettings,
                 onSearch = viewModel::openSearch,
             )
 
@@ -191,11 +198,43 @@ fun PlayerApp(
                 onToggleFavorite = viewModel::toggleFavorite,
             )
 
+            AiRecommendationSection(
+                state = aiRecommendationState,
+                favoriteCount = favoritesState.tracks.size,
+                isAiConfigured = aiSettingsState.isConfigured,
+                onPlayRecommendations = viewModel::playAiRecommendations,
+                onRefreshRecommendations = viewModel::refreshAiRecommendations,
+                onOpenSettings = viewModel::openAiSettings,
+            )
+
             QueueSection(
                 queue = orderedQueue.take(4),
                 currentIndex = playbackState.currentIndex,
                 isPlaying = playbackState.isPlaying,
                 onSelectTrack = viewModel::selectPlaylistTrack,
+            )
+        }
+    }
+
+    if (aiSettingsState.isVisible) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = viewModel::closeAiSettings,
+            sheetState = sheetState,
+            containerColor = SurfacePrimary,
+            contentColor = TextPrimary,
+            dragHandle = {
+                BottomSheetDefaults.DragHandle(color = TextTertiary)
+            },
+        ) {
+            AiSettingsSheet(
+                state = aiSettingsState,
+                favoriteCount = favoritesState.tracks.size,
+                onEndpointChange = viewModel::updateAiEndpoint,
+                onModelChange = viewModel::updateAiModel,
+                onAccessKeyChange = viewModel::updateAiAccessKey,
+                onSave = viewModel::saveAiSettings,
+                onClose = viewModel::closeAiSettings,
             )
         }
     }
@@ -304,21 +343,22 @@ private fun LyricsDetailScreen(
     ) {
         PlayerBackdrop(isPlaying = playbackState.isPlaying)
 
-        currentTrack?.coverUrl
-            ?.takeIf { it.isNotBlank() }
-            ?.let { coverUrl ->
-                AsyncImage(
-                    model = coverUrl,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(280.dp)
-                        .align(Alignment.TopCenter)
-                        .offset(y = 88.dp)
-                        .blur(42.dp)
-                        .graphicsLayer { alpha = 0.16f },
-                    contentScale = ContentScale.Crop,
+        Box(
+            modifier = Modifier
+                .size(320.dp)
+                .align(Alignment.TopCenter)
+                .offset(y = 86.dp)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            AccentSky.copy(alpha = 0.12f),
+                            AccentMint.copy(alpha = 0.08f),
+                            Color.Transparent,
+                        ),
+                    ),
                 )
-            }
+                .blur(56.dp),
+        )
 
         Column(
             modifier = Modifier
@@ -365,31 +405,44 @@ private fun LyricsDetailScreen(
             Spacer(modifier = Modifier.height(18.dp))
 
             if (state.credits.isNotEmpty()) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                Surface(
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                    shape = RoundedCornerShape(26.dp),
+                    color = Color.White.copy(alpha = 0.055f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
                 ) {
-                    state.credits.forEach { credit ->
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "${credit.role}:",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = TextTertiary,
-                            )
-                            Text(
-                                text = credit.name,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = TextPrimary,
-                            )
+                    Column(
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        state.credits.forEach { credit ->
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Surface(
+                                    shape = PillShape,
+                                    color = Color.Black.copy(alpha = 0.16f),
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f)),
+                                ) {
+                                    Text(
+                                        text = credit.role,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = TextTertiary,
+                                    )
+                                }
+                                Text(
+                                    text = credit.name,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = TextPrimary,
+                                )
+                            }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(22.dp))
+                Spacer(modifier = Modifier.height(26.dp))
             }
 
             when {
@@ -439,17 +492,17 @@ private fun LyricsDetailScreen(
                                 ) {
                                     if (isActive) {
                                         Surface(
-                                            shape = RoundedCornerShape(24.dp),
-                                            color = Color.White.copy(alpha = 0.035f),
-                                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.06f)),
+                                            shape = RoundedCornerShape(28.dp),
+                                            color = Color.White.copy(alpha = 0.04f),
+                                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
                                         ) {
                                             Text(
                                                 text = line.text,
-                                                modifier = Modifier.padding(horizontal = 22.dp, vertical = 10.dp),
+                                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
                                                 textAlign = TextAlign.Center,
                                                 style = MaterialTheme.typography.headlineMedium.copy(
                                                     fontSize = 30.sp,
-                                                    lineHeight = 38.sp,
+                                                    lineHeight = 40.sp,
                                                 ),
                                                 color = TextPrimary,
                                                 fontWeight = FontWeight.SemiBold,
@@ -462,12 +515,12 @@ private fun LyricsDetailScreen(
                                             textAlign = TextAlign.Center,
                                             style = when {
                                                 distance == 1 -> MaterialTheme.typography.titleLarge.copy(lineHeight = 34.sp)
-                                                else -> MaterialTheme.typography.bodyLarge.copy(lineHeight = 30.sp)
+                                                else -> MaterialTheme.typography.bodyLarge.copy(lineHeight = 31.sp)
                                             },
                                             color = when {
-                                                distance == 1 -> TextSecondary
-                                                distance == 2 -> TextTertiary.copy(alpha = 0.9f)
-                                                else -> TextTertiary.copy(alpha = 0.62f)
+                                                distance == 1 -> TextSecondary.copy(alpha = 0.96f)
+                                                distance == 2 -> TextTertiary.copy(alpha = 0.82f)
+                                                else -> TextTertiary.copy(alpha = 0.54f)
                                             },
                                             fontWeight = FontWeight.Normal,
                                         )
@@ -726,6 +779,7 @@ private fun PlayerBackdrop(isPlaying: Boolean) {
 private fun PlayerHeader(
     favoriteCount: Int,
     onOpenFavorites: () -> Unit,
+    onOpenAiSettings: () -> Unit,
     onSearch: () -> Unit,
 ) {
     Row(
@@ -754,6 +808,11 @@ private fun PlayerHeader(
                 icon = Icons.Default.Favorite,
                 label = favoriteCount.toString(),
                 onClick = onOpenFavorites,
+            )
+            HeaderActionButton(
+                icon = Icons.Default.Settings,
+                contentDescription = "打开 AI 设置",
+                onClick = onOpenAiSettings,
             )
             HeaderActionButton(
                 icon = Icons.Default.Search,
@@ -1291,6 +1350,372 @@ private fun CompactTransportButton(
 }
 
 @Composable
+private fun AiRecommendationSection(
+    state: AiRecommendationUiState,
+    favoriteCount: Int,
+    isAiConfigured: Boolean,
+    onPlayRecommendations: () -> Unit,
+    onRefreshRecommendations: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val heroTitle = when {
+        favoriteCount == 0 -> "先收藏几首歌"
+        !isAiConfigured -> "先配置 AI 接口"
+        state.isLoadingMore -> "正在续接下一组推荐"
+        state.isLoading -> "正在生成推荐"
+        state.tracks.isNotEmpty() -> "下一组歌已经准备好了"
+        else -> "生成你的推荐歌单"
+    }
+
+    val heroBody = when {
+        favoriteCount == 0 -> "收藏会作为推荐依据。先收藏你常听的歌，再回来生成更贴近口味的播放队列。"
+        !isAiConfigured -> "填写接口地址、模型名和 Access Key 后，就能基于收藏自动生成并续接推荐队列。"
+        state.isLoadingMore -> "会结合你的收藏和跳过记录补下一波歌，尽量减少重复和不喜欢的内容。"
+        state.isLoading -> "正在整理这一轮可播放歌曲，完成后可以直接开始播放。"
+        state.tracks.isNotEmpty() && state.skippedCount > 0 -> "当前队列 ${state.tracks.size} 首，已经记录 ${state.skippedCount} 首跳过反馈，后续推荐会主动避开。"
+        state.tracks.isNotEmpty() -> "当前队列 ${state.tracks.size} 首，播放接近队尾时会自动续接下一轮推荐。"
+        else -> "会先生成并匹配成可播放歌曲，再按随机顺序开始播放。"
+    }
+
+    GlassPanel(contentPadding = PaddingValues(18.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "AI 推荐",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary,
+                )
+                Text(
+                    text = "根据收藏、播放进度和跳过反馈，持续整理下一组歌。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary,
+                )
+            }
+
+            HeaderActionButton(
+                icon = Icons.Default.Settings,
+                contentDescription = "打开 AI 设置",
+                onClick = onOpenSettings,
+            )
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
+            color = Color.Transparent,
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(
+                                AccentSky.copy(alpha = 0.18f),
+                                AccentMint.copy(alpha = 0.12f),
+                                SurfaceSecondary.copy(alpha = 0.86f),
+                            ),
+                        ),
+                    )
+                    .padding(horizontal = 18.dp, vertical = 18.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    AccentMint.copy(alpha = 0.14f),
+                                    Color.Transparent,
+                                ),
+                                radius = 620f,
+                            ),
+                        ),
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(
+                            text = "基于你的收藏持续生成",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = AccentMint.copy(alpha = 0.95f),
+                        )
+                        Text(
+                            text = heroTitle,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = TextPrimary,
+                        )
+                        Text(
+                            text = heroBody,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary,
+                        )
+                    }
+
+                    Surface(
+                        modifier = Modifier.size(66.dp),
+                        shape = RoundedCornerShape(22.dp),
+                        color = Color.Black.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (state.isLoading || state.isLoadingMore) {
+                                    Icons.Default.GraphicEq
+                                } else {
+                                    Icons.Default.MusicNote
+                                },
+                                contentDescription = null,
+                                tint = AccentMint,
+                                modifier = Modifier.size(28.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                AiStatPill(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Default.Favorite,
+                    label = "${favoriteCount} 首收藏",
+                )
+                AiStatPill(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Default.MusicNote,
+                    label = "${state.tracks.size} 首待播",
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                AiStatPill(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Default.SkipNext,
+                    label = if (state.skippedCount > 0) "跳过 ${state.skippedCount}" else "暂无跳过反馈",
+                )
+                AiStatPill(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Default.GraphicEq,
+                    label = if (state.isLoadingMore) "正在续接" else "自动续接已开启",
+                )
+            }
+        }
+
+        when {
+            favoriteCount == 0 -> {
+                SearchHintCard(
+                    title = "还没有推荐依据",
+                    body = "先在搜索结果或播放器里收藏几首歌，AI 才能生成更可靠的推荐队列。",
+                )
+            }
+
+            !isAiConfigured -> {
+                AiPrimaryActionButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    icon = Icons.Default.Settings,
+                    label = "配置 AI 接口",
+                    onClick = onOpenSettings,
+                )
+            }
+
+            state.tracks.isNotEmpty() -> {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    color = SurfaceSecondary.copy(alpha = 0.44f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.06f)),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = "本轮推荐概览",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = TextPrimary,
+                        )
+                        Text(
+                            text = when {
+                                state.isLoadingMore -> "正在补充后续歌曲，播到后面会自动接上。"
+                                state.isLoading -> "正在刷新这一轮推荐，当前队列仍然可以继续播放。"
+                                state.suggestionCount > 0 -> "本轮共生成 ${state.suggestionCount} 首推荐，当前成功匹配到 ${state.tracks.size} 首可播放歌曲。"
+                                else -> "点击下面按钮，会按随机顺序播放这一整组推荐。"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextTertiary,
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    AiPrimaryActionButton(
+                        modifier = Modifier.weight(1f),
+                        icon = Icons.Default.PlayArrow,
+                        label = "开始播放",
+                        onClick = onPlayRecommendations,
+                    )
+                    ActionPill(
+                        modifier = Modifier.weight(1f),
+                        icon = Icons.Default.Refresh,
+                        label = "刷新推荐",
+                        onClick = onRefreshRecommendations,
+                    )
+                }
+            }
+
+            state.isLoading -> {
+                SearchHintCard(
+                    title = "正在生成推荐",
+                    body = "正在根据你的收藏整理这一轮歌曲，完成后可以直接开始播放。",
+                )
+            }
+
+            else -> {
+                AiPrimaryActionButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    icon = Icons.Default.PlayArrow,
+                    label = "生成并播放",
+                    onClick = onPlayRecommendations,
+                )
+            }
+        }
+
+        if (state.errorMessage != null) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = SurfaceSecondary.copy(alpha = 0.44f),
+                border = BorderStroke(1.dp, AccentCoral.copy(alpha = 0.32f)),
+            ) {
+                Text(
+                    text = state.errorMessage,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+            }
+        }
+
+        if (state.tracks.isNotEmpty() && state.sourceFavoriteCount != favoriteCount) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = SurfaceSecondary.copy(alpha = 0.36f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f)),
+            ) {
+                Text(
+                    text = "收藏夹刚更新过，点右上角刷新后，推荐会更贴近你现在的口味。",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AiStatPill(
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    label: String,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        color = SurfaceSecondary.copy(alpha = 0.56f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.06f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = AccentSky,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AiPrimaryActionButton(
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(22.dp),
+        color = Color.Transparent,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+    ) {
+        Row(
+            modifier = Modifier
+                .background(
+                    Brush.linearGradient(
+                        colors = if (enabled) {
+                            listOf(AccentMint, AccentSky)
+                        } else {
+                            listOf(TextMuted, TextMuted)
+                        },
+                    ),
+                )
+                .clickable(enabled = enabled, onClick = onClick)
+                .padding(horizontal = 18.dp, vertical = 15.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MidnightBackground,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MidnightBackground,
+            )
+        }
+    }
+}
+
+@Composable
 private fun QueueSection(
     queue: List<Pair<Int, Track>>,
     currentIndex: Int,
@@ -1460,6 +1885,152 @@ private fun QueueRow(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun AiSettingsSheet(
+    state: AiSettingsUiState,
+    favoriteCount: Int,
+    onEndpointChange: (String) -> Unit,
+    onModelChange: (String) -> Unit,
+    onAccessKeyChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AI 推荐设置",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "支持 OpenAI 兼容的 Chat Completions 接口。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextTertiary,
+                )
+            }
+
+            IconButton(onClick = onClose) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "关闭 AI 设置",
+                    tint = TextSecondary,
+                )
+            }
+        }
+
+        SearchHintCard(
+            title = "填写方式",
+            body = "接口地址可填写完整的 /chat/completions 地址，也可以填写到 /v1，应用会自动补全。保存后会根据你的收藏夹生成推荐。",
+        )
+
+        OutlinedTextField(
+            value = state.endpoint,
+            onValueChange = onEndpointChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = {
+                Text("AI 接口地址")
+            },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Uri,
+                imeAction = ImeAction.Next,
+            ),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = AccentMint,
+                unfocusedBorderColor = TextMuted.copy(alpha = 0.65f),
+                focusedLabelColor = AccentMint,
+                unfocusedLabelColor = TextTertiary,
+                cursorColor = AccentMint,
+                focusedTextColor = TextPrimary,
+                unfocusedTextColor = TextPrimary,
+                focusedContainerColor = SurfaceSecondary.copy(alpha = 0.64f),
+                unfocusedContainerColor = SurfaceSecondary.copy(alpha = 0.38f),
+            ),
+        )
+
+        OutlinedTextField(
+            value = state.model,
+            onValueChange = onModelChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = {
+                Text("模型名")
+            },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = AccentMint,
+                unfocusedBorderColor = TextMuted.copy(alpha = 0.65f),
+                focusedLabelColor = AccentMint,
+                unfocusedLabelColor = TextTertiary,
+                cursorColor = AccentMint,
+                focusedTextColor = TextPrimary,
+                unfocusedTextColor = TextPrimary,
+                focusedContainerColor = SurfaceSecondary.copy(alpha = 0.64f),
+                unfocusedContainerColor = SurfaceSecondary.copy(alpha = 0.38f),
+            ),
+        )
+
+        OutlinedTextField(
+            value = state.accessKey,
+            onValueChange = onAccessKeyChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = {
+                Text("Access Key")
+            },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(onDone = { onSave() }),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = AccentMint,
+                unfocusedBorderColor = TextMuted.copy(alpha = 0.65f),
+                focusedLabelColor = AccentMint,
+                unfocusedLabelColor = TextTertiary,
+                cursorColor = AccentMint,
+                focusedTextColor = TextPrimary,
+                unfocusedTextColor = TextPrimary,
+                focusedContainerColor = SurfaceSecondary.copy(alpha = 0.64f),
+                unfocusedContainerColor = SurfaceSecondary.copy(alpha = 0.38f),
+            ),
+        )
+
+        if (state.missingFields().isNotEmpty()) {
+            SearchHintCard(
+                title = "还差这些信息",
+                body = state.missingFields().joinToString(separator = "、"),
+            )
+        } else if (favoriteCount == 0) {
+            SearchHintCard(
+                title = "配置已经齐了",
+                body = "现在只差收藏几首歌，AI 就能基于你的收藏夹给出推荐。",
+            )
+        }
+
+        ActionPill(
+            modifier = Modifier.fillMaxWidth(),
+            icon = Icons.Default.PlayArrow,
+            label = if (favoriteCount > 0) "保存并刷新推荐" else "保存配置",
+            onClick = onSave,
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
     }
 }
 
