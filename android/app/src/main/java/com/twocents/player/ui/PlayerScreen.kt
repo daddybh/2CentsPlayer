@@ -1200,11 +1200,6 @@ private fun PlaybackConsole(
                     style = MaterialTheme.typography.labelSmall,
                     color = TextTertiary,
                 )
-                Text(
-                    text = formatTime(currentMs),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = TextPrimary,
-                )
             }
 
             Box(
@@ -1766,13 +1761,13 @@ private fun SearchSheet(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "搜索网易云音乐",
+                    text = "搜索歌曲",
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "把外部搜索也放进同一套播放器体验里。",
+                    text = "网易云和酷我会混排展示，并在结果里标注来源。",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextTertiary,
                 )
@@ -1842,7 +1837,7 @@ private fun SearchSheet(
             state.isLoading && state.results.isEmpty() -> {
                 SearchHintCard(
                     title = "正在搜索",
-                    body = "稍等一下，正在从网易云网页端抓取结果。",
+                    body = "稍等一下，正在聚合网易云和酷我的结果。",
                 )
             }
 
@@ -1900,7 +1895,7 @@ private fun SearchSheet(
             else -> {
                 SearchHintCard(
                     title = "开始搜索",
-                    body = "这里已经接好了网易云搜索，输入关键词后就能把结果直接加入当前播放器上下文。",
+                    body = "输入关键词后会混合展示网易云和酷我结果，并直接加入当前播放器上下文。",
                 )
             }
         }
@@ -2105,6 +2100,19 @@ private fun SearchResultCard(
                         color = TextTertiary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = Color.Black.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                ) {
+                    Text(
+                        text = track.source.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isCurrentTrack) AccentMint else TextSecondary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                     )
                 }
             }

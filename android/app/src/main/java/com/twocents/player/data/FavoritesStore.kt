@@ -18,13 +18,15 @@ class FavoritesStore(context: Context) {
                 add(
                     Track(
                         id = item.optString("id"),
+                        source = TrackSource.fromStorageKey(item.optString("source")),
+                        sourceId = item.optString("sourceId"),
                         title = item.optString("title"),
                         artist = item.optString("artist"),
                         album = item.optString("album"),
                         durationMs = item.optLong("durationMs"),
                         coverUrl = item.optString("coverUrl"),
                         isFavorite = true,
-                    ),
+                    ).withCanonicalIdentity(),
                 )
             }
         }.filter { it.id.isNotBlank() }
@@ -36,6 +38,8 @@ class FavoritesStore(context: Context) {
             array.put(
                 JSONObject()
                     .put("id", track.id)
+                    .put("source", track.source.storageKey)
+                    .put("sourceId", track.sourceTrackId())
                     .put("title", track.title)
                     .put("artist", track.artist)
                     .put("album", track.album)

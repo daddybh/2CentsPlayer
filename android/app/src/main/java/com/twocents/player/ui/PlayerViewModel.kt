@@ -11,9 +11,10 @@ import com.twocents.player.data.AiRecommendedTrack
 import com.twocents.player.data.AiServiceConfig
 import com.twocents.player.data.AiSettingsStore
 import com.twocents.player.data.FavoritesStore
-import com.twocents.player.data.NeteaseSearchRepository
+import com.twocents.player.data.MusicLibraryRepository
 import com.twocents.player.data.PlaybackState
 import com.twocents.player.data.Track
+import com.twocents.player.data.withCanonicalIdentity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -73,7 +74,7 @@ class PlayerViewModel(
 
     private val aiRecommendationRepository = AiRecommendationRepository()
     private val aiSettingsStore = AiSettingsStore(application)
-    private val neteaseSearchRepository = NeteaseSearchRepository()
+    private val musicLibraryRepository = MusicLibraryRepository()
     private val favoritesStore = FavoritesStore(application)
     private val shuffleRandom = Random(System.currentTimeMillis())
     private val lyricsCache = mutableMapOf<String, LyricsContent>()
@@ -88,7 +89,9 @@ class PlayerViewModel(
     private var aiPlaybackSession: AiPlaybackSession? = null
 
     private val initialAiSettings = aiSettingsStore.loadSettings()
-    private val initialFavorites = favoritesStore.loadFavorites().map { it.copy(isFavorite = true) }
+    private val initialFavorites = favoritesStore.loadFavorites().map { track ->
+        track.withCanonicalIdentity().copy(isFavorite = true)
+    }
 
     var playbackState by mutableStateOf(
         PlaybackState(),
@@ -414,6 +417,8 @@ class PlayerViewModel(
                 loadMoreErrorMessage = null,
                 canLoadMore = false,
                 nextOffset = 0,
+                nextNeteaseOffset = 0,
+                nextKuwoOffset = 0,
                 results = emptyList(),
             )
             return
@@ -430,28 +435,33 @@ class PlayerViewModel(
                 loadMoreErrorMessage = null,
                 canLoadMore = false,
                 nextOffset = 0,
+                nextNeteaseOffset = 0,
+                nextKuwoOffset = 0,
                 results = emptyList(),
             )
 
             runCatching {
                 withContext(Dispatchers.IO) {
-                    neteaseSearchRepository.searchTracks(
+                    musicLibraryRepository.searchTracks(
                         keyword = query,
-                        limit = SEARCH_PAGE_SIZE,
-                        offset = 0,
+                        limitPerSource = SEARCH_PAGE_SIZE,
+                        neteaseOffset = 0,
+                        kuwoOffset = 0,
                     )
                 }
-            }.onSuccess { results ->
+            }.onSuccess { searchPage ->
                 if (requestId != latestSearchRequestId) return@onSuccess
-                val normalizedResults = results.map(::normalizeTrack)
+                val normalizedResults = searchPage.tracks.map(::normalizeTrack)
                 searchState = searchState.copy(
                     isLoading = false,
                     activeQuery = query,
                     results = normalizedResults,
                     errorMessage = null,
                     loadMoreErrorMessage = null,
-                    canLoadMore = results.size >= SEARCH_PAGE_SIZE,
-                    nextOffset = results.size,
+                    canLoadMore = searchPage.canLoadMore,
+                    nextOffset = normalizedResults.size,
+                    nextNeteaseOffset = searchPage.nextNeteaseOffset,
+                    nextKuwoOffset = searchPage.nextKuwoOffset,
                 )
             }.onFailure {
                 if (requestId != latestSearchRequestId) return@onFailure
@@ -464,6 +474,8 @@ class PlayerViewModel(
                     loadMoreErrorMessage = null,
                     canLoadMore = false,
                     nextOffset = 0,
+                    nextNeteaseOffset = 0,
+                    nextKuwoOffset = 0,
                 )
             }
         }
@@ -475,7 +487,8 @@ class PlayerViewModel(
         if (searchState.query.trim() != activeQuery) return
         if (searchState.isLoading || searchState.isLoadingMore || !searchState.canLoadMore) return
 
-        val offset = searchState.nextOffset
+        val neteaseOffset = searchState.nextNeteaseOffset
+        val kuwoOffset = searchState.nextKuwoOffset
 
         viewModelScope.launch {
             val requestId = ++latestSearchRequestId
@@ -486,24 +499,27 @@ class PlayerViewModel(
 
             runCatching {
                 withContext(Dispatchers.IO) {
-                    neteaseSearchRepository.searchTracks(
+                    musicLibraryRepository.searchTracks(
                         keyword = activeQuery,
-                        limit = SEARCH_PAGE_SIZE,
-                        offset = offset,
+                        limitPerSource = SEARCH_PAGE_SIZE,
+                        neteaseOffset = neteaseOffset,
+                        kuwoOffset = kuwoOffset,
                     )
                 }
-            }.onSuccess { results ->
+            }.onSuccess { searchPage ->
                 if (requestId != latestSearchRequestId) return@onSuccess
                 val mergedResults = mergeSearchResults(
                     existing = searchState.results,
-                    incoming = results.map(::normalizeTrack),
+                    incoming = searchPage.tracks.map(::normalizeTrack),
                 )
                 searchState = searchState.copy(
                     isLoadingMore = false,
                     results = mergedResults,
                     loadMoreErrorMessage = null,
-                    canLoadMore = results.size >= SEARCH_PAGE_SIZE,
-                    nextOffset = offset + results.size,
+                    canLoadMore = searchPage.canLoadMore,
+                    nextOffset = mergedResults.size,
+                    nextNeteaseOffset = searchPage.nextNeteaseOffset,
+                    nextKuwoOffset = searchPage.nextKuwoOffset,
                 )
             }.onFailure {
                 if (requestId != latestSearchRequestId) return@onFailure
@@ -734,7 +750,7 @@ class PlayerViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    val resolvedTracks = neteaseSearchRepository.resolvePlayableTracks(queueForResolution)
+                    val resolvedTracks = musicLibraryRepository.resolvePlayableTracks(queueForResolution)
                     val resolvedTrackMap = resolvedTracks.associateBy { track -> track.id }
                     normalizedQueue.map { track ->
                         val resolvedTrack = resolvedTrackMap[track.id]
@@ -837,7 +853,7 @@ class PlayerViewModel(
             limit = AI_PAGE_SIZE,
         )
         val resolvedTracks = suggestions.mapNotNull { suggestion ->
-            neteaseSearchRepository.findBestMatchTrack(
+            musicLibraryRepository.findBestMatchTrack(
                 title = suggestion.title,
                 artist = suggestion.artist,
             )?.let { matchedTrack ->
@@ -964,7 +980,7 @@ class PlayerViewModel(
     ): List<AiRecommendedTrack> {
         if (recommendations.isEmpty()) return emptyList()
 
-        val resolvedTracks = neteaseSearchRepository.resolvePlayableTracks(
+        val resolvedTracks = musicLibraryRepository.resolvePlayableTracks(
             recommendations.map { recommendation ->
                 recommendation.track.copy(audioUrl = "")
             },
@@ -1024,16 +1040,17 @@ class PlayerViewModel(
     }
 
     private fun normalizeTrack(track: Track): Track {
-        val knownTrack = findKnownTrack(track.id)
-        val isFavorite = favoritesState.tracks.any { it.id == track.id }
+        val canonicalTrack = track.withCanonicalIdentity()
+        val knownTrack = findKnownTrack(canonicalTrack.id)
+        val isFavorite = favoritesState.tracks.any { it.id == canonicalTrack.id }
 
-        return track.copy(
-            title = track.title.ifBlank { knownTrack?.title.orEmpty() },
-            artist = track.artist.ifBlank { knownTrack?.artist.orEmpty() },
-            album = track.album.ifBlank { knownTrack?.album.orEmpty() },
-            durationMs = track.durationMs.takeIf { it > 0 } ?: knownTrack?.durationMs ?: 0L,
-            coverUrl = track.coverUrl.ifBlank { knownTrack?.coverUrl.orEmpty() },
-            audioUrl = track.audioUrl.ifBlank { knownTrack?.audioUrl.orEmpty() },
+        return canonicalTrack.copy(
+            title = canonicalTrack.title.ifBlank { knownTrack?.title.orEmpty() },
+            artist = canonicalTrack.artist.ifBlank { knownTrack?.artist.orEmpty() },
+            album = canonicalTrack.album.ifBlank { knownTrack?.album.orEmpty() },
+            durationMs = canonicalTrack.durationMs.takeIf { it > 0 } ?: knownTrack?.durationMs ?: 0L,
+            coverUrl = canonicalTrack.coverUrl.ifBlank { knownTrack?.coverUrl.orEmpty() },
+            audioUrl = canonicalTrack.audioUrl.ifBlank { knownTrack?.audioUrl.orEmpty() },
             isFavorite = isFavorite,
         )
     }
@@ -1117,17 +1134,30 @@ class PlayerViewModel(
     ): List<Track> {
         if (incoming.isEmpty()) return existing
 
-        val seenIds = existing.mapNotNull { track ->
-            track.id.takeIf { it.isNotBlank() }
-        }.toMutableSet()
+        val seenKeys = existing.map(::searchDedupKey).toMutableSet()
         return buildList(existing.size + incoming.size) {
             addAll(existing)
             incoming.forEach { track ->
-                if (track.id.isBlank() || seenIds.add(track.id)) {
+                val dedupKey = searchDedupKey(track)
+                if (dedupKey.isBlank() || seenKeys.add(dedupKey)) {
                     add(track)
                 }
             }
         }
+    }
+
+    private fun searchDedupKey(track: Track): String {
+        val normalizedTitle = track.title.lowercase().filter { it.isLetterOrDigit() }
+        if (normalizedTitle.isBlank()) return track.id
+
+        val normalizedArtist = track.artist
+            .split(',', '、', '/', '&')
+            .firstOrNull()
+            .orEmpty()
+            .lowercase()
+            .filter { it.isLetterOrDigit() }
+
+        return "$normalizedTitle::$normalizedArtist"
     }
 
     private fun loadLyricsForCurrentTrack(force: Boolean = false) {
@@ -1151,7 +1181,8 @@ class PlayerViewModel(
         track: Track,
         force: Boolean = false,
     ) {
-        if (track.id.isBlank()) {
+        val normalizedTrack = track.withCanonicalIdentity()
+        if (normalizedTrack.id.isBlank()) {
             lyricsState = lyricsState.copy(
                 isVisible = true,
                 trackId = null,
@@ -1164,10 +1195,10 @@ class PlayerViewModel(
         }
 
         if (!force) {
-            lyricsCache[track.id]?.let { cachedLyrics ->
+            lyricsCache[normalizedTrack.id]?.let { cachedLyrics ->
                 lyricsState = lyricsState.copy(
                     isVisible = true,
-                    trackId = track.id,
+                    trackId = normalizedTrack.id,
                     isLoading = false,
                     credits = cachedLyrics.credits,
                     lines = cachedLyrics.lines,
@@ -1180,7 +1211,7 @@ class PlayerViewModel(
         val requestId = ++latestLyricsRequestId
         lyricsState = lyricsState.copy(
             isVisible = true,
-            trackId = track.id,
+            trackId = normalizedTrack.id,
             isLoading = true,
             credits = emptyList(),
             lines = emptyList(),
@@ -1190,15 +1221,15 @@ class PlayerViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    neteaseSearchRepository.fetchLyrics(track.id)
+                    musicLibraryRepository.fetchLyrics(normalizedTrack)
                 }
             }.onSuccess { rawLyrics ->
                 if (requestId != latestLyricsRequestId) return@onSuccess
                 val content = parseLyricsContent(rawLyrics.orEmpty())
-                lyricsCache[track.id] = content
+                lyricsCache[normalizedTrack.id] = content
                 lyricsState = lyricsState.copy(
                     isVisible = true,
-                    trackId = track.id,
+                    trackId = normalizedTrack.id,
                     isLoading = false,
                     credits = content.credits,
                     lines = content.lines,
@@ -1208,7 +1239,7 @@ class PlayerViewModel(
                 if (requestId != latestLyricsRequestId) return@onFailure
                 lyricsState = lyricsState.copy(
                     isVisible = true,
-                    trackId = track.id,
+                    trackId = normalizedTrack.id,
                     isLoading = false,
                     credits = emptyList(),
                     lines = emptyList(),

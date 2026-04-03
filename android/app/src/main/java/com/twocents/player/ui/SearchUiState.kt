@@ -13,5 +13,7 @@ data class SearchUiState(
     val loadMoreErrorMessage: String? = null,
     val canLoadMore: Boolean = false,
     val nextOffset: Int = 0,
+    val nextNeteaseOffset: Int = 0,
+    val nextKuwoOffset: Int = 0,
     val results: List<Track> = emptyList(),
 )

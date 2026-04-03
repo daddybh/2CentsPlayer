@@ -18,7 +18,8 @@ class NeteaseSearchRepository(
         .readTimeout(10, TimeUnit.SECONDS)
         .callTimeout(15, TimeUnit.SECONDS)
         .build(),
-) {
+) : MusicSourceRepository {
+    override val source: TrackSource = TrackSource.NETEASE
 
     data class PlaybackDetails(
         val audioUrl: String,
@@ -26,10 +27,10 @@ class NeteaseSearchRepository(
         val isPreviewOnly: Boolean,
     )
 
-    fun searchTracks(
+    override fun searchTracks(
         keyword: String,
-        limit: Int = 20,
-        offset: Int = 0,
+        limit: Int,
+        offset: Int,
     ): List<Track> {
         val trimmedKeyword = keyword.trim()
         if (trimmedKeyword.isBlank()) return emptyList()
@@ -77,9 +78,9 @@ class NeteaseSearchRepository(
         }
     }
 
-    fun findBestMatchTrack(
+    override fun findBestMatchTrack(
         title: String,
-        artist: String = "",
+        artist: String,
     ): Track? {
         val trimmedTitle = title.trim()
         val trimmedArtist = artist.trim()
@@ -109,6 +110,10 @@ class NeteaseSearchRepository(
             .maxByOrNull { it.second }
             ?.takeIf { it.second > 0 }
             ?.first
+    }
+
+    override fun fetchLyrics(track: Track): String? {
+        return fetchLyrics(track.sourceTrackId())
     }
 
     fun fetchLyrics(trackId: String): String? {
@@ -149,13 +154,15 @@ class NeteaseSearchRepository(
 
         val albumJson = optJSONObject("al")
         return Track(
-            id = opt("id")?.toString().orEmpty(),
+            id = "${TrackSource.NETEASE.storageKey}:${opt("id")?.toString().orEmpty()}",
+            source = TrackSource.NETEASE,
+            sourceId = opt("id")?.toString().orEmpty(),
             title = optString("name"),
             artist = artists.joinToString(", ").ifBlank { "未知艺术家" },
             album = albumJson?.optString("name").orEmpty(),
             durationMs = optLong("dt"),
             coverUrl = albumJson?.optString("picUrl").orEmpty().replace("http://", "https://"),
-        )
+        ).withCanonicalIdentity()
     }
 
     private fun scoreTrackMatch(
@@ -195,27 +202,27 @@ class NeteaseSearchRepository(
     }
 
     fun resolvePlayableTrack(track: Track): Track {
-        if (track.id.isBlank()) return track
-        val playbackDetails = resolvePlaybackDetails(track.id) ?: return track
-        return track.copy(
+        if (track.sourceTrackId().isBlank()) return track.withCanonicalIdentity()
+        val playbackDetails = resolvePlaybackDetails(track.sourceTrackId()) ?: return track.withCanonicalIdentity()
+        return track.withCanonicalIdentity().copy(
             audioUrl = playbackDetails.audioUrl,
             durationMs = playbackDetails.durationMs.takeIf { it > 0 } ?: track.durationMs,
         )
     }
 
-    fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
+    override fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
         if (tracks.isEmpty()) return emptyList()
 
-        val trackIds = tracks.map { it.id }.filter { it.isNotBlank() }
+        val trackIds = tracks.map { it.sourceTrackId() }.filter { it.isNotBlank() }
         if (trackIds.isEmpty()) return tracks
 
         val playbackDetailsById = resolvePlaybackDetails(trackIds)
         return tracks.map { track ->
-            val playbackDetails = playbackDetailsById[track.id]
+            val playbackDetails = playbackDetailsById[track.sourceTrackId()]
             if (playbackDetails == null) {
-                track
+                track.withCanonicalIdentity()
             } else {
-                track.copy(
+                track.withCanonicalIdentity().copy(
                     audioUrl = playbackDetails.audioUrl,
                     durationMs = playbackDetails.durationMs.takeIf { it > 0 } ?: track.durationMs,
                 )
