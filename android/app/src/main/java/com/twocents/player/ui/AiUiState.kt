@@ -21,6 +21,7 @@ data class AiSettingsUiState(
 }
 
 data class AiRecommendationUiState(
+    val isActive: Boolean = false,
     val isLoading: Boolean = false,
     val isLoadingMore: Boolean = false,
     val tracks: List<AiRecommendedTrack> = emptyList(),

@@ -281,6 +281,14 @@ class PlayerViewModel(
         }
     }
 
+    fun toggleHeartMode() {
+        if (activePlaybackSource == PlaybackSource.AI) {
+            applyPlaybackSource(PlaybackSource.REGULAR)
+        } else {
+            playAiRecommendations()
+        }
+    }
+
     fun playAiRecommendations() {
         if (aiRecommendationState.isLoading) return
 
@@ -994,6 +1002,7 @@ class PlayerViewModel(
         if (source == PlaybackSource.AI) {
             activePlaybackSource = PlaybackSource.AI
             aiRecommendationState = aiRecommendationState.copy(
+                isActive = true,
                 isLoadingMore = aiPlaybackSession?.isLoadingMore == true,
                 skippedCount = aiPlaybackSession?.skippedTracks?.size ?: aiRecommendationState.skippedCount,
             )
@@ -1003,6 +1012,7 @@ class PlayerViewModel(
         activePlaybackSource = PlaybackSource.REGULAR
         aiPlaybackSession = null
         aiRecommendationState = aiRecommendationState.copy(
+            isActive = false,
             isLoadingMore = false,
             skippedCount = 0,
         )
@@ -1096,6 +1106,7 @@ class PlayerViewModel(
 
     private fun clearAiRecommendations(errorMessage: String? = null) {
         aiRecommendationState = AiRecommendationUiState(
+            isActive = activePlaybackSource == PlaybackSource.AI,
             errorMessage = errorMessage,
         )
     }

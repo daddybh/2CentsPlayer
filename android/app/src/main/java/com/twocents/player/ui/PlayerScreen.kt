@@ -56,7 +56,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
@@ -74,6 +73,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -190,21 +191,15 @@ fun PlayerApp(
                 statusMessage = playbackState.statusMessage,
                 currentIndex = playbackState.currentIndex,
                 queueCount = playbackState.playlist.size,
+                isHeartModeActive = aiRecommendationState.isActive,
+                isHeartModeLoading = aiRecommendationState.isLoading || aiRecommendationState.isLoadingMore,
                 onSeek = viewModel::seekTo,
                 onPlayPause = viewModel::togglePlayPause,
                 onSkipNext = viewModel::skipNext,
                 onSkipPrevious = viewModel::skipPrevious,
                 onOpenLyrics = viewModel::openLyricsScreen,
                 onToggleFavorite = viewModel::toggleFavorite,
-            )
-
-            AiRecommendationSection(
-                state = aiRecommendationState,
-                favoriteCount = favoritesState.tracks.size,
-                isAiConfigured = aiSettingsState.isConfigured,
-                onPlayRecommendations = viewModel::playAiRecommendations,
-                onRefreshRecommendations = viewModel::refreshAiRecommendations,
-                onOpenSettings = viewModel::openAiSettings,
+                onToggleHeartMode = viewModel::toggleHeartMode,
             )
 
             QueueSection(
@@ -864,12 +859,15 @@ private fun HeroArtwork(
     statusMessage: String?,
     currentIndex: Int,
     queueCount: Int,
+    isHeartModeActive: Boolean,
+    isHeartModeLoading: Boolean,
     onSeek: (Long) -> Unit,
     onPlayPause: () -> Unit,
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit,
     onOpenLyrics: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onToggleHeartMode: () -> Unit,
 ) {
     val motionEnabled = rememberMotionEnabled()
     val rotationTransition = rememberInfiniteTransition(label = "hero_disc")
@@ -1054,6 +1052,14 @@ private fun HeroArtwork(
                         onPlayPause = onPlayPause,
                         onSkipNext = onSkipNext,
                         onSkipPrevious = onSkipPrevious,
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    HeartModeToggle(
+                        isActive = isHeartModeActive,
+                        isLoading = isHeartModeLoading,
+                        onToggle = { onToggleHeartMode() },
                     )
                 }
             }
@@ -1350,366 +1356,66 @@ private fun CompactTransportButton(
 }
 
 @Composable
-private fun AiRecommendationSection(
-    state: AiRecommendationUiState,
-    favoriteCount: Int,
-    isAiConfigured: Boolean,
-    onPlayRecommendations: () -> Unit,
-    onRefreshRecommendations: () -> Unit,
-    onOpenSettings: () -> Unit,
+private fun HeartModeToggle(
+    isActive: Boolean,
+    isLoading: Boolean,
+    onToggle: (Boolean) -> Unit,
 ) {
-    val heroTitle = when {
-        favoriteCount == 0 -> "先收藏几首歌"
-        !isAiConfigured -> "先配置 AI 接口"
-        state.isLoadingMore -> "正在续接下一组推荐"
-        state.isLoading -> "正在生成推荐"
-        state.tracks.isNotEmpty() -> "下一组歌已经准备好了"
-        else -> "生成你的推荐歌单"
-    }
-
-    val heroBody = when {
-        favoriteCount == 0 -> "收藏会作为推荐依据。先收藏你常听的歌，再回来生成更贴近口味的播放队列。"
-        !isAiConfigured -> "填写接口地址、模型名和 Access Key 后，就能基于收藏自动生成并续接推荐队列。"
-        state.isLoadingMore -> "会结合你的收藏和跳过记录补下一波歌，尽量减少重复和不喜欢的内容。"
-        state.isLoading -> "正在整理这一轮可播放歌曲，完成后可以直接开始播放。"
-        state.tracks.isNotEmpty() && state.skippedCount > 0 -> "当前队列 ${state.tracks.size} 首，已经记录 ${state.skippedCount} 首跳过反馈，后续推荐会主动避开。"
-        state.tracks.isNotEmpty() -> "当前队列 ${state.tracks.size} 首，播放接近队尾时会自动续接下一轮推荐。"
-        else -> "会先生成并匹配成可播放歌曲，再按随机顺序开始播放。"
-    }
-
-    GlassPanel(contentPadding = PaddingValues(18.dp)) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(enabled = !isLoading) { onToggle(!isActive) },
+        shape = RoundedCornerShape(22.dp),
+        color = if (isActive) Color.White.copy(alpha = 0.05f) else Color.Transparent,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = if (isActive) 0.15f else 0.08f)),
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .padding(horizontal = 20.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text = "AI 推荐",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary,
-                )
-                Text(
-                    text = "根据收藏、播放进度和跳过反馈，持续整理下一组歌。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextTertiary,
-                )
-            }
-
-            HeaderActionButton(
-                icon = Icons.Default.Settings,
-                contentDescription = "打开 AI 设置",
-                onClick = onOpenSettings,
-            )
-        }
-
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(28.dp),
-            color = Color.Transparent,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
-        ) {
-            Box(
-                modifier = Modifier
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(
-                                AccentSky.copy(alpha = 0.18f),
-                                AccentMint.copy(alpha = 0.12f),
-                                SurfaceSecondary.copy(alpha = 0.86f),
-                            ),
-                        ),
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = AccentMint,
                     )
-                    .padding(horizontal = 18.dp, vertical = 18.dp),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.radialGradient(
-                                colors = listOf(
-                                    AccentMint.copy(alpha = 0.14f),
-                                    Color.Transparent,
-                                ),
-                                radius = 620f,
-                            ),
-                        ),
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Text(
-                            text = "基于你的收藏持续生成",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = AccentMint.copy(alpha = 0.95f),
-                        )
-                        Text(
-                            text = heroTitle,
-                            style = MaterialTheme.typography.titleLarge,
-                            color = TextPrimary,
-                        )
-                        Text(
-                            text = heroBody,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = TextSecondary,
-                        )
-                    }
-
-                    Surface(
-                        modifier = Modifier.size(66.dp),
-                        shape = RoundedCornerShape(22.dp),
-                        color = Color.Black.copy(alpha = 0.16f),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = if (state.isLoading || state.isLoadingMore) {
-                                    Icons.Default.GraphicEq
-                                } else {
-                                    Icons.Default.MusicNote
-                                },
-                                contentDescription = null,
-                                tint = AccentMint,
-                                modifier = Modifier.size(28.dp),
-                            )
-                        }
-                    }
+                } else {
+                    Icon(
+                        imageVector = if (isActive) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = null,
+                        tint = if (isActive) AccentMint else TextSecondary,
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                AiStatPill(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Default.Favorite,
-                    label = "${favoriteCount} 首收藏",
-                )
-                AiStatPill(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Default.MusicNote,
-                    label = "${state.tracks.size} 首待播",
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                AiStatPill(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Default.SkipNext,
-                    label = if (state.skippedCount > 0) "跳过 ${state.skippedCount}" else "暂无跳过反馈",
-                )
-                AiStatPill(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Default.GraphicEq,
-                    label = if (state.isLoadingMore) "正在续接" else "自动续接已开启",
-                )
-            }
-        }
-
-        when {
-            favoriteCount == 0 -> {
-                SearchHintCard(
-                    title = "还没有推荐依据",
-                    body = "先在搜索结果或播放器里收藏几首歌，AI 才能生成更可靠的推荐队列。",
-                )
-            }
-
-            !isAiConfigured -> {
-                AiPrimaryActionButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    icon = Icons.Default.Settings,
-                    label = "配置 AI 接口",
-                    onClick = onOpenSettings,
-                )
-            }
-
-            state.tracks.isNotEmpty() -> {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    color = SurfaceSecondary.copy(alpha = 0.44f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.06f)),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = "AI 心动模式",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (isActive) TextPrimary else TextSecondary,
+                    )
+                    if (isLoading) {
                         Text(
-                            text = "本轮推荐概览",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = TextPrimary,
-                        )
-                        Text(
-                            text = when {
-                                state.isLoadingMore -> "正在补充后续歌曲，播到后面会自动接上。"
-                                state.isLoading -> "正在刷新这一轮推荐，当前队列仍然可以继续播放。"
-                                state.suggestionCount > 0 -> "本轮共生成 ${state.suggestionCount} 首推荐，当前成功匹配到 ${state.tracks.size} 首可播放歌曲。"
-                                else -> "点击下面按钮，会按随机顺序播放这一整组推荐。"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
+                            text = "正在准备推荐...",
+                            style = MaterialTheme.typography.labelSmall,
                             color = TextTertiary,
                         )
                     }
                 }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    AiPrimaryActionButton(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Default.PlayArrow,
-                        label = "开始播放",
-                        onClick = onPlayRecommendations,
-                    )
-                    ActionPill(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Default.Refresh,
-                        label = "刷新推荐",
-                        onClick = onRefreshRecommendations,
-                    )
-                }
             }
-
-            state.isLoading -> {
-                SearchHintCard(
-                    title = "正在生成推荐",
-                    body = "正在根据你的收藏整理这一轮歌曲，完成后可以直接开始播放。",
+            
+            Switch(
+                checked = isActive,
+                onCheckedChange = { onToggle(it) },
+                enabled = !isLoading,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = MidnightBackground,
+                    checkedTrackColor = AccentMint,
+                    uncheckedThumbColor = TextSecondary,
+                    uncheckedTrackColor = SurfaceSecondary,
+                    uncheckedBorderColor = Color.Transparent,
                 )
-            }
-
-            else -> {
-                AiPrimaryActionButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    icon = Icons.Default.PlayArrow,
-                    label = "生成并播放",
-                    onClick = onPlayRecommendations,
-                )
-            }
-        }
-
-        if (state.errorMessage != null) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                color = SurfaceSecondary.copy(alpha = 0.44f),
-                border = BorderStroke(1.dp, AccentCoral.copy(alpha = 0.32f)),
-            ) {
-                Text(
-                    text = state.errorMessage,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-            }
-        }
-
-        if (state.tracks.isNotEmpty() && state.sourceFavoriteCount != favoriteCount) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                color = SurfaceSecondary.copy(alpha = 0.36f),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f)),
-            ) {
-                Text(
-                    text = "收藏夹刚更新过，点右上角刷新后，推荐会更贴近你现在的口味。",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextTertiary,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AiStatPill(
-    modifier: Modifier = Modifier,
-    icon: ImageVector,
-    label: String,
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(18.dp),
-        color = SurfaceSecondary.copy(alpha = 0.56f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.06f)),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = AccentSky,
-                modifier = Modifier.size(16.dp),
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodySmall,
-                color = TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-@Composable
-private fun AiPrimaryActionButton(
-    modifier: Modifier = Modifier,
-    icon: ImageVector,
-    label: String,
-    onClick: () -> Unit,
-    enabled: Boolean = true,
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(22.dp),
-        color = Color.Transparent,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
-    ) {
-        Row(
-            modifier = Modifier
-                .background(
-                    Brush.linearGradient(
-                        colors = if (enabled) {
-                            listOf(AccentMint, AccentSky)
-                        } else {
-                            listOf(TextMuted, TextMuted)
-                        },
-                    ),
-                )
-                .clickable(enabled = enabled, onClick = onClick)
-                .padding(horizontal = 18.dp, vertical = 15.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MidnightBackground,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MidnightBackground,
             )
         }
     }
