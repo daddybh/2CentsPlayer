@@ -3,7 +3,7 @@ package com.twocents.player.data
 class MusicLibraryRepository(
     private val neteaseRepository: MusicSourceRepository = NeteaseSearchRepository(),
     private val kuwoRepository: MusicSourceRepository = KuwoSearchRepository(),
-) {
+) : RadioTrackLookup {
     fun searchTracks(
         keyword: String,
         limitPerSource: Int = 20,
@@ -33,9 +33,9 @@ class MusicLibraryRepository(
         )
     }
 
-    fun findBestMatchTrack(
+    override fun findBestMatchTrack(
         title: String,
-        artist: String = "",
+        artist: String,
     ): Track? {
         val candidates = listOfNotNull(
             neteaseRepository.findBestMatchTrack(title, artist),
@@ -70,7 +70,7 @@ class MusicLibraryRepository(
         return null
     }
 
-    fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
+    override fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
         if (tracks.isEmpty()) return emptyList()
 
         val normalizedTracks = tracks.map(Track::withCanonicalIdentity)

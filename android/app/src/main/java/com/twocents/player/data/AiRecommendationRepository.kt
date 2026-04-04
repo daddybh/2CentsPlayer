@@ -15,7 +15,7 @@ class AiRecommendationRepository(
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(35, TimeUnit.SECONDS)
         .build(),
-) {
+) : RadioCandidateSource {
 
     fun requestRecommendations(
         settings: AiServiceConfig,
@@ -87,7 +87,7 @@ class AiRecommendationRepository(
         }
     }
 
-    fun requestRadioCandidates(
+    override fun requestRadioCandidates(
         settings: AiServiceConfig,
         request: RadioRecommendationRequest,
     ): List<AiSuggestedTrack> {
