@@ -22,9 +22,21 @@ class RadioReplenishmentEngine(
         var workingSession = session
         var suggestionCount = 0
         var appended = emptyList<RadioResolvedCandidate>()
+        var forceRecoveringRetry = false
 
         while (attempts < MAX_ATTEMPTS && appended.size < MIN_SAFE_APPEND) {
-            val request = planner.buildRequest(favorites, history, workingSession)
+            val planningSession = workingSession.copy(
+                queuedRecommendations = workingSession.queuedRecommendations + appended.map { it.recommendation },
+            )
+            val plannedRequest = planner.buildRequest(favorites, history, planningSession)
+            val request = if (forceRecoveringRetry) {
+                plannedRequest.copy(
+                    boundaryState = RadioBoundaryState.RECOVERING,
+                    waveTargets = RadioWaveTargets(5, 1, 0),
+                )
+            } else {
+                plannedRequest
+            }
             workingSession = workingSession.copy(
                 boundaryState = request.boundaryState,
                 statusLabel = request.boundaryState.statusLabel(),
@@ -66,11 +78,12 @@ class RadioReplenishmentEngine(
                 }
             }
 
-            appended = composer.compose(
-                existingQueue = workingSession.queuedRecommendations,
+            val newlyAppended = composer.compose(
+                existingQueue = workingSession.queuedRecommendations + appended.map { it.recommendation },
                 candidates = playable,
                 boundaryState = workingSession.boundaryState,
             )
+            appended = appended + newlyAppended
 
             if (appended.size >= MIN_SAFE_APPEND) {
                 break
@@ -81,6 +94,7 @@ class RadioReplenishmentEngine(
                 statusLabel = RadioBoundaryState.RECOVERING.statusLabel(),
                 consecutiveLowYieldCount = workingSession.consecutiveLowYieldCount + 1,
             )
+            forceRecoveringRetry = true
             attempts += 1
         }
 

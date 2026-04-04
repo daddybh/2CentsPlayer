@@ -15,10 +15,10 @@ class RadioReplenishmentEngineTest {
                     suggestedTrack("first-missing", "Artist 3", RadioCandidateBucket.SAFE),
                 ),
                 listOf(
+                    suggestedTrack("first-safe", "Artist 1", RadioCandidateBucket.SAFE),
+                    suggestedTrack("second-same-artist", "Artist 2", RadioCandidateBucket.SAFE),
                     suggestedTrack("second-safe", "Artist 4", RadioCandidateBucket.SAFE),
                     suggestedTrack("second-adjacent", "Artist 5", RadioCandidateBucket.ADJACENT),
-                    suggestedTrack("second-surprise", "Artist 6", RadioCandidateBucket.SURPRISE),
-                    suggestedTrack("second-safe-2", "Artist 7", RadioCandidateBucket.SAFE),
                 ),
             ),
         )
@@ -27,17 +27,15 @@ class RadioReplenishmentEngineTest {
                 "first-safe" to track("first-safe", "Artist 1", audioUrl = "https://audio.example/first-safe.mp3"),
                 "first-adjacent" to track("first-adjacent", "Artist 2"),
                 "first-missing" to track("first-missing", "Artist 3"),
+                "second-same-artist" to track("second-same-artist", "Artist 2"),
                 "second-safe" to track("second-safe", "Artist 4"),
                 "second-adjacent" to track("second-adjacent", "Artist 5"),
-                "second-surprise" to track("second-surprise", "Artist 6"),
-                "second-safe-2" to track("second-safe-2", "Artist 7"),
             ),
             resolvedTracks = mapOf(
                 "first-adjacent" to track("first-adjacent", "Artist 2", audioUrl = "https://audio.example/first-adjacent.mp3"),
+                "second-same-artist" to track("second-same-artist", "Artist 2", audioUrl = "https://audio.example/second-same-artist.mp3"),
                 "second-safe" to track("second-safe", "Artist 4", audioUrl = "https://audio.example/second-safe.mp3"),
                 "second-adjacent" to track("second-adjacent", "Artist 5", audioUrl = "https://audio.example/second-adjacent.mp3"),
-                "second-surprise" to track("second-surprise", "Artist 6", audioUrl = "https://audio.example/second-surprise.mp3"),
-                "second-safe-2" to track("second-safe-2", "Artist 7", audioUrl = "https://audio.example/second-safe-2.mp3"),
             ),
         )
         val engine = RadioReplenishmentEngine(
@@ -53,8 +51,16 @@ class RadioReplenishmentEngineTest {
         )
 
         assertEquals(2, candidateSource.callCount)
-        assertTrue(result.appendedRecommendations.size >= 4)
+        assertEquals(4, result.appendedRecommendations.size)
+        assertEquals(
+            listOf("first-safe", "first-adjacent", "second-safe", "second-adjacent"),
+            result.appendedRecommendations.map { it.track.id },
+        )
         assertTrue(result.appendedRecommendations.all { it.track.audioUrl.isNotBlank() })
+        assertEquals(RadioBoundaryState.BALANCED, candidateSource.requests[0].boundaryState)
+        assertEquals(RadioWaveTargets(4, 2, 1), candidateSource.requests[0].waveTargets)
+        assertEquals(RadioBoundaryState.RECOVERING, candidateSource.requests[1].boundaryState)
+        assertEquals(RadioWaveTargets(5, 1, 0), candidateSource.requests[1].waveTargets)
     }
 
     @Test
@@ -86,6 +92,7 @@ class RadioReplenishmentEngineTest {
         )
 
         assertTrue(result.appendedRecommendations.isEmpty())
+        assertEquals(3, candidateSource.callCount)
         assertEquals(RadioBoundaryState.RECOVERING, result.updatedSession.boundaryState)
         assertEquals("回到熟悉区", result.updatedSession.statusLabel)
     }
@@ -121,11 +128,13 @@ class RadioReplenishmentEngineTest {
     ) : RadioCandidateSource {
         var callCount: Int = 0
             private set
+        val requests = mutableListOf<RadioRecommendationRequest>()
 
         override fun requestRadioCandidates(
             settings: AiServiceConfig,
             request: RadioRecommendationRequest,
         ): List<AiSuggestedTrack> {
+            requests += request
             val response = responses.getOrElse(callCount) { emptyList() }
             callCount += 1
             return response
