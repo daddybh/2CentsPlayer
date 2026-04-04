@@ -4,6 +4,7 @@
 .DS_Store
 Thumbs.db
 .codex/
+.superpowers/
 
 # Build outputs
 build/
