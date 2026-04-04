@@ -38,6 +38,7 @@ data class AiSuggestedTrack(
     val title: String,
     val artist: String,
     val reason: String = "",
+    val bucket: RadioCandidateBucket = RadioCandidateBucket.SAFE,
 )
 
 data class AiRecommendedTrack(

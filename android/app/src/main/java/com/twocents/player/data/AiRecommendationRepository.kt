@@ -87,6 +87,65 @@ class AiRecommendationRepository(
         }
     }
 
+    fun requestRadioCandidates(
+        settings: AiServiceConfig,
+        request: RadioRecommendationRequest,
+    ): List<AiSuggestedTrack> {
+        if (!settings.isComplete) {
+            throw IOException("AI 配置不完整，请先填写接口地址、模型和 Access Key。")
+        }
+
+        val requestBody = JSONObject()
+            .put("model", settings.model.trim())
+            .put("stream", false)
+            .put(
+                "messages",
+                JSONArray()
+                    .put(
+                        JSONObject()
+                            .put("role", "system")
+                            .put("content", buildRadioSystemPrompt(request)),
+                    )
+                    .put(
+                        JSONObject()
+                            .put("role", "user")
+                            .put("content", buildRadioUserPrompt(request)),
+                    ),
+            )
+
+        val networkRequest = Request.Builder()
+            .url(settings.chatCompletionsUrl())
+            .addHeader("Authorization", "Bearer ${settings.accessKey.trim()}")
+            .post(
+                requestBody
+                    .toString()
+                    .toByteArray(Charsets.UTF_8)
+                    .toRequestBody(JSON_MEDIA_TYPE.toMediaType()),
+            )
+            .build()
+
+        client.newCall(networkRequest).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IOException(extractErrorMessage(body, response.code))
+            }
+            if (body.isBlank()) {
+                throw IOException("AI 接口返回了空响应。")
+            }
+
+            val root = runCatching { JSONObject(body) }.getOrElse {
+                throw IOException("AI 接口返回的内容不是合法 JSON。")
+            }
+
+            val content = extractAssistantContent(root)
+            if (content.isBlank()) {
+                throw IOException("AI 接口没有返回推荐内容。")
+            }
+
+            return parseRecommendations(content).take(request.rawCandidateLimit)
+        }
+    }
+
     private fun buildSystemPrompt(limit: Int): String = """
         你是一个音乐推荐助手。
         请根据用户的收藏歌曲，推荐 $limit 首风格贴近但不要完全重复的歌曲。
@@ -121,6 +180,39 @@ class AiRecommendationRepository(
             
             这些歌已经在当前 AI 队列里，不要重复推荐：
             ${avoidLines.ifBlank { "无" }}
+        """.trimIndent()
+    }
+
+    private fun buildRadioSystemPrompt(request: RadioRecommendationRequest): String = """
+        你是一个探索电台候选生成助手。
+        请返回候选歌曲并按桶位分配，目标为 safe=${request.waveTargets.safeCount} adjacent=${request.waveTargets.adjacentCount} surprise=${request.waveTargets.surpriseCount}。
+        必须只返回 JSON 对象，不要 Markdown，不要解释，不要代码块。
+        JSON 格式必须为：
+        {"recommendations":[{"title":"歌曲名","artist":"歌手名","reason":"一句中文推荐理由","bucket":"safe|adjacent|surprise"}]}
+        规则：
+        1. 结合用户提供的种子和正负反馈进行推荐。
+        2. 避开用户指定的 track ids 与 artist keys。
+        3. reason 必须是简短中文，一句即可。
+    """.trimIndent()
+
+    private fun buildRadioUserPrompt(request: RadioRecommendationRequest): String {
+        val favoriteSeedLines = request.favoriteSeeds.toPromptLines(MAX_PROMPT_FAVORITES)
+
+        return """
+            Favorite seeds:
+            ${favoriteSeedLines.ifBlank { "none" }}
+            
+            Positive track ids:
+            ${request.positiveTrackIds.joinToString(", ").ifBlank { "none" }}
+            
+            Negative track ids:
+            ${request.negativeTrackIds.joinToString(", ").ifBlank { "none" }}
+            
+            Avoid track ids:
+            ${request.avoidTrackIds.joinToString(", ").ifBlank { "none" }}
+            
+            Avoid artist keys:
+            ${request.avoidArtistKeys.joinToString(", ").ifBlank { "none" }}
         """.trimIndent()
     }
 
@@ -206,6 +298,11 @@ class AiRecommendationRepository(
                 val title = item.optString("title").trim()
                 val artist = item.optString("artist").trim()
                 val reason = item.optString("reason").trim()
+                val bucket = when (item.optString("bucket").trim().lowercase()) {
+                    "adjacent" -> RadioCandidateBucket.ADJACENT
+                    "surprise" -> RadioCandidateBucket.SURPRISE
+                    else -> RadioCandidateBucket.SAFE
+                }
                 if (title.isBlank() || artist.isBlank()) continue
 
                 val dedupeKey = "${title.lowercase()}::${artist.lowercase()}"
@@ -216,6 +313,7 @@ class AiRecommendationRepository(
                         title = title,
                         artist = artist,
                         reason = reason,
+                        bucket = bucket,
                     ),
                 )
             }
