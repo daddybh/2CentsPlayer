@@ -86,7 +86,7 @@ class RadioHistoryStore(
     ): List<RadioFeedbackEvent> {
         val cutoffMs = nowMs - MAX_EVENT_AGE_MS
         return events.asSequence()
-            .filter { it.timestampMs >= cutoffMs }
+            .filter { it.timestampMs in cutoffMs..nowMs }
             .sortedBy { it.timestampMs }
             .toList()
             .takeLast(MAX_EVENTS)

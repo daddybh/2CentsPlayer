@@ -20,6 +20,13 @@ class RadioHistoryStoreTest {
                     .put("type", RadioFeedbackType.POSITIVE.name)
                     .put("timestampMs", nowMs - RadioHistoryStore.MAX_EVENT_AGE_MS - 1L),
             )
+            put(
+                JSONObject()
+                    .put("trackId", "future-track")
+                    .put("artistKey", "future-artist")
+                    .put("type", RadioFeedbackType.POSITIVE.name)
+                    .put("timestampMs", nowMs + 1L),
+            )
             for (index in 0 until (RadioHistoryStore.MAX_EVENTS + 5)) {
                 put(
                     JSONObject()
@@ -41,6 +48,7 @@ class RadioHistoryStoreTest {
         assertEquals("track-5", snapshot.events.first().trackId)
         assertEquals("track-404", snapshot.events.last().trackId)
         assertFalse(snapshot.events.any { it.trackId == "expired-track" })
+        assertFalse(snapshot.events.any { it.trackId == "future-track" })
     }
 
     @Test
@@ -67,6 +75,50 @@ class RadioHistoryStoreTest {
         assertEquals(setOf("a-2", "a-4", "a-5"), snapshot.negativeArtistKeys)
         assertTrue(snapshot.recentTrackIds.contains("t-5"))
         assertTrue(snapshot.recentArtistKeys.contains("a-5"))
+    }
+
+    @Test
+    fun recordEvent_appendsAndPersistsWithExpiryCleanupAndMaxBound() {
+        val nowMs = 1_000_000_000_000L
+        val eventsJson = JSONArray().apply {
+            put(event("expired-track", "expired-artist", RadioFeedbackType.POSITIVE, nowMs - RadioHistoryStore.MAX_EVENT_AGE_MS - 1L))
+            put(event("future-track", "future-artist", RadioFeedbackType.POSITIVE, nowMs + 1L))
+            for (index in 0 until RadioHistoryStore.MAX_EVENTS) {
+                put(event("track-$index", "artist-$index", RadioFeedbackType.POSITIVE, nowMs - 10_000L + index))
+            }
+        }
+        val preferences = FakeSharedPreferences(
+            mutableMapOf(KEY_EVENTS to eventsJson.toString()),
+        )
+        val store = RadioHistoryStore(preferences) { nowMs }
+
+        store.recordEvent(
+            RadioFeedbackEvent(
+                trackId = "new-track",
+                artistKey = "new-artist",
+                type = RadioFeedbackType.REPLAY_POSITIVE,
+                timestampMs = nowMs,
+            ),
+        )
+
+        val persistedRaw = preferences.getString(KEY_EVENTS, null) ?: error("Expected persisted events json")
+        val persisted = JSONArray(persistedRaw)
+        val persistedIds = buildList(persisted.length()) {
+            for (index in 0 until persisted.length()) {
+                add(persisted.getJSONObject(index).getString("trackId"))
+            }
+        }
+
+        assertEquals(RadioHistoryStore.MAX_EVENTS, persisted.length())
+        assertEquals("track-1", persistedIds.first())
+        assertEquals("new-track", persistedIds.last())
+        assertFalse(persistedIds.contains("expired-track"))
+        assertFalse(persistedIds.contains("future-track"))
+
+        val snapshot = store.loadSnapshot(nowMs)
+        assertEquals(RadioHistoryStore.MAX_EVENTS, snapshot.events.size)
+        assertEquals("track-1", snapshot.events.first().trackId)
+        assertEquals("new-track", snapshot.events.last().trackId)
     }
 
     private fun event(
