@@ -5,6 +5,7 @@
 Thumbs.db
 .codex/
 .superpowers/
+.worktrees/
 
 # Build outputs
 build/
