@@ -58,6 +58,8 @@ class RadioReplenishmentEngine(
                     ),
                     bucket = suggestion.bucket,
                 )
+            }.filterNot { candidate ->
+                candidate.recommendation.track.isLocallyExcluded(request)
             }
 
             val unresolvedTracks = matchedCandidates
@@ -123,6 +125,21 @@ class RadioReplenishmentEngine(
             RadioBoundaryState.EXPANDING -> "正在扩圈"
             RadioBoundaryState.RECOVERING -> "回到熟悉区"
         }
+    }
+
+    private fun Track.isLocallyExcluded(request: RadioRecommendationRequest): Boolean {
+        return id in request.negativeTrackIds ||
+            id in request.avoidTrackIds ||
+            radioArtistKey() in request.avoidArtistKeys
+    }
+
+    private fun Track.radioArtistKey(): String {
+        return artist
+            .split(',', '、', '/', '&')
+            .firstOrNull()
+            .orEmpty()
+            .trim()
+            .lowercase()
     }
 
     companion object {

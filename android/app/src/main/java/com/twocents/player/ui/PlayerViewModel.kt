@@ -90,6 +90,7 @@ class PlayerViewModel(
     private var activePlaybackSource = PlaybackSource.REGULAR
     private var radioSession: RadioSessionState? = null
     private var latestCompletedRadioTrackId: String? = null
+    private var suppressedRadioCompletionTrackId: String? = null
 
     private val initialAiSettings = aiSettingsStore.loadSettings()
     private val initialFavorites = favoritesStore.loadFavorites().map { track ->
@@ -307,7 +308,11 @@ class PlayerViewModel(
 
     fun toggleHeartMode() {
         if (activePlaybackSource == PlaybackSource.AI) {
-            stopRadioPlayback()
+            unwindRadioPlaybackToRegularQueue(
+                track = playbackState.currentTrack,
+                playWhenReady = playbackState.isPlaying,
+                startPositionMs = playbackState.currentPositionMs,
+            )
         } else {
             playAiRecommendations()
         }
@@ -371,6 +376,7 @@ class PlayerViewModel(
                 )
                 radioSession = normalizedSession
                 latestCompletedRadioTrackId = null
+                suppressedRadioCompletionTrackId = null
 
                 aiRecommendationState = aiRecommendationState.copy(
                     isLoading = false,
@@ -626,6 +632,7 @@ class PlayerViewModel(
         )
         radioSession = session
         latestCompletedRadioTrackId = null
+        suppressedRadioCompletionTrackId = null
         activePlaybackSource = PlaybackSource.AI
         aiRecommendationState = aiRecommendationState.copy(
             tracks = normalizedRecommendations,
@@ -705,7 +712,10 @@ class PlayerViewModel(
                 currentPositionMs = positionMs.coerceAtLeast(0L),
             )
             if (activePlaybackSource == PlaybackSource.AI) {
-                stopRadioPlayback(
+                unwindRadioPlaybackToRegularQueue(
+                    track = previousTrack,
+                    playWhenReady = false,
+                    startPositionMs = previousPositionMs,
                     statusLabel = radioQueueEndedLabel(),
                     isDegraded = aiRecommendationState.isDegraded,
                 )
@@ -1064,6 +1074,7 @@ class PlayerViewModel(
         aiRecommendationState = aiRecommendationState.copy(
             skippedCount = updatedSession.skippedTrackIds.size,
         )
+        suppressedRadioCompletionTrackId = currentTrack.id
         latestCompletedRadioTrackId = latestCompletedRadioTrackId?.takeUnless { it == currentTrack.id }
     }
 
@@ -1097,6 +1108,10 @@ class PlayerViewModel(
         val session = radioSession ?: return
         if (normalizedTrack.id.isBlank()) return
         if (latestCompletedRadioTrackId == normalizedTrack.id) return
+        if (suppressedRadioCompletionTrackId == normalizedTrack.id) {
+            suppressedRadioCompletionTrackId = null
+            return
+        }
 
         val feedbackType = classifyCompletion(
             positionMs = positionMs,
@@ -1145,7 +1160,10 @@ class PlayerViewModel(
         )
         if (latestCompletedRadioTrackId != currentTrack.id) return
 
-        stopRadioPlayback(
+        unwindRadioPlaybackToRegularQueue(
+            track = currentTrack,
+            playWhenReady = false,
+            startPositionMs = playbackState.currentPositionMs,
             statusLabel = radioQueueEndedLabel(),
             isDegraded = aiRecommendationState.isDegraded,
         )
@@ -1182,9 +1200,43 @@ class PlayerViewModel(
         statusLabel: String? = null,
         isDegraded: Boolean = false,
     ) {
+        clearRadioPlaybackState(
+            statusLabel = statusLabel,
+            isDegraded = isDegraded,
+        )
+    }
+
+    private fun unwindRadioPlaybackToRegularQueue(
+        track: Track?,
+        playWhenReady: Boolean,
+        startPositionMs: Long,
+        statusLabel: String? = null,
+        isDegraded: Boolean = false,
+    ) {
+        track?.let(::normalizeTrack)?.let { currentTrack ->
+            prepareTrackForPlayback(
+                queue = listOf(currentTrack),
+                index = 0,
+                playWhenReady = playWhenReady,
+                startPositionMs = startPositionMs.coerceAtLeast(0L),
+                source = PlaybackSource.REGULAR,
+            )
+        }
+
+        clearRadioPlaybackState(
+            statusLabel = statusLabel,
+            isDegraded = isDegraded,
+        )
+    }
+
+    private fun clearRadioPlaybackState(
+        statusLabel: String? = null,
+        isDegraded: Boolean = false,
+    ) {
         activePlaybackSource = PlaybackSource.REGULAR
         radioSession = null
         latestCompletedRadioTrackId = null
+        suppressedRadioCompletionTrackId = null
         aiRecommendationState = aiRecommendationState.copy(
             isActive = false,
             isLoading = false,
@@ -1201,32 +1253,10 @@ class PlayerViewModel(
         statusLabel: String? = null,
         isDegraded: Boolean = false,
     ) {
-        val currentTrack = playbackState.currentTrack?.let(::normalizeTrack)
-        if (currentTrack != null && currentTrack.audioUrl.isNotBlank()) {
-            commitPlayableQueue(
-                queue = listOf(currentTrack),
-                index = 0,
-                playWhenReady = false,
-                startPositionMs = playbackState.currentPositionMs,
-                source = PlaybackSource.REGULAR,
-            )
-        } else {
-            playbackState = playbackState.copy(
-                currentTrack = currentTrack,
-                playlist = currentTrack?.let(::listOf).orEmpty(),
-                currentIndex = 0,
-                isPlaying = false,
-                isPreparing = false,
-            )
-            emitPlayerCommand(
-                PlayerCommand.SetPlayWhenReady(
-                    id = nextPlayerCommandId(),
-                    playWhenReady = false,
-                ),
-            )
-        }
-
-        stopRadioPlayback(
+        unwindRadioPlaybackToRegularQueue(
+            track = playbackState.currentTrack,
+            playWhenReady = false,
+            startPositionMs = playbackState.currentPositionMs,
             statusLabel = statusLabel,
             isDegraded = isDegraded,
         )
@@ -1253,17 +1283,7 @@ class PlayerViewModel(
         }
 
         activePlaybackSource = PlaybackSource.REGULAR
-        radioSession = null
-        latestCompletedRadioTrackId = null
-        aiRecommendationState = aiRecommendationState.copy(
-            isActive = false,
-            isLoading = false,
-            isLoadingMore = false,
-            tracks = emptyList(),
-            skippedCount = 0,
-            statusLabel = null,
-            isDegraded = false,
-        )
+        clearRadioPlaybackState()
     }
 
     private fun nextAiSessionId(): Long {

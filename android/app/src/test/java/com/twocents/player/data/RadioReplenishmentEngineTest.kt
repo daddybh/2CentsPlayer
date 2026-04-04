@@ -97,6 +97,57 @@ class RadioReplenishmentEngineTest {
         assertEquals("回到熟悉区", result.updatedSession.statusLabel)
     }
 
+    @Test
+    fun replenish_filtersLocallyBlockedTracksAfterMatching() {
+        val candidateSource = FakeRadioCandidateSource(
+            responses = listOf(
+                listOf(
+                    suggestedTrack("negative-1", "Blocked Negative Artist", RadioCandidateBucket.SAFE),
+                    suggestedTrack("played-1", "Blocked Played Artist", RadioCandidateBucket.ADJACENT),
+                    suggestedTrack("artist-blocked-1", "Blocked Artist / Guest", RadioCandidateBucket.SAFE),
+                    suggestedTrack("allowed-1", "Allowed Artist 1", RadioCandidateBucket.SAFE),
+                    suggestedTrack("allowed-2", "Allowed Artist 2", RadioCandidateBucket.ADJACENT),
+                    suggestedTrack("allowed-3", "Allowed Artist 3", RadioCandidateBucket.SAFE),
+                    suggestedTrack("allowed-4", "Allowed Artist 4", RadioCandidateBucket.SURPRISE),
+                ),
+            ),
+        )
+        val trackLookup = FakeRadioTrackLookup(
+            matchedTracks = mapOf(
+                "negative-1" to track("negative-1", "Blocked Negative Artist", audioUrl = "https://audio.example/negative-1.mp3"),
+                "played-1" to track("played-1", "Blocked Played Artist", audioUrl = "https://audio.example/played-1.mp3"),
+                "artist-blocked-1" to track("artist-blocked-1", "Blocked Artist / Guest", audioUrl = "https://audio.example/artist-blocked-1.mp3"),
+                "allowed-1" to track("allowed-1", "Allowed Artist 1", audioUrl = "https://audio.example/allowed-1.mp3"),
+                "allowed-2" to track("allowed-2", "Allowed Artist 2", audioUrl = "https://audio.example/allowed-2.mp3"),
+                "allowed-3" to track("allowed-3", "Allowed Artist 3", audioUrl = "https://audio.example/allowed-3.mp3"),
+                "allowed-4" to track("allowed-4", "Allowed Artist 4", audioUrl = "https://audio.example/allowed-4.mp3"),
+            ),
+        )
+        val engine = RadioReplenishmentEngine(
+            candidateSource = candidateSource,
+            trackLookup = trackLookup,
+        )
+
+        val result = engine.replenish(
+            settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
+            favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
+            history = RadioHistorySnapshot(
+                negativeTrackIds = setOf("negative-1"),
+                recentArtistKeys = listOf("blocked artist"),
+            ),
+            session = RadioSessionState(
+                sessionId = 13L,
+                playedTrackIds = setOf("played-1"),
+            ),
+        )
+
+        assertEquals(1, candidateSource.callCount)
+        assertEquals(
+            listOf("allowed-1", "allowed-2", "allowed-3", "allowed-4"),
+            result.appendedRecommendations.map { it.track.id },
+        )
+    }
+
     private fun suggestedTrack(
         title: String,
         artist: String,
