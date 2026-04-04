@@ -159,7 +159,10 @@ class PlayerViewModel(
         if (playlist.isEmpty()) return
         recordCurrentAiTrackSkipped()
         if (activePlaybackSource == PlaybackSource.AI && playbackState.currentIndex >= playlist.lastIndex) {
-            maybeAutoQueueMoreAiRecommendations(force = true)
+            maybeAutoQueueMoreAiRecommendations(
+                force = true,
+                advanceToFirstNewTrack = true,
+            )
             return
         }
         val nextIndex = if (activePlaybackSource == PlaybackSource.AI) {
@@ -386,7 +389,7 @@ class PlayerViewModel(
                     } else {
                         normalizedSession.statusLabel
                     },
-                    isDegraded = isRadioSessionDegraded(normalizedSession, normalizedTracks.isEmpty()),
+                    isDegraded = normalizedTracks.isEmpty(),
                 )
 
                 if (playAfterRefresh && normalizedTracks.isNotEmpty()) {
@@ -631,7 +634,7 @@ class PlayerViewModel(
             isLoadingMore = false,
             skippedCount = session.skippedTrackIds.size,
             statusLabel = session.statusLabel,
-            isDegraded = isRadioSessionDegraded(session),
+            isDegraded = false,
         )
 
         prepareTrackForPlayback(
@@ -674,11 +677,6 @@ class PlayerViewModel(
             currentTrack = updatedTrack,
             playlist = updatedPlaylist,
             currentPositionMs = positionMs.coerceAtLeast(0L),
-        )
-        recordAiCompletionIfEligible(
-            track = updatedTrack,
-            positionMs = positionMs,
-            durationMs = normalizedDuration,
         )
     }
 
@@ -730,7 +728,6 @@ class PlayerViewModel(
                 positionMs = previousPositionMs,
                 durationMs = previousDurationMs,
             )
-            latestCompletedRadioTrackId = latestCompletedRadioTrackId?.takeUnless { it == updatedTrack.id }
         }
 
         playbackState = playbackState.copy(
@@ -904,7 +901,10 @@ class PlayerViewModel(
         )
     }
 
-    private fun queueMoreAiRecommendations(force: Boolean) {
+    private fun queueMoreAiRecommendations(
+        force: Boolean,
+        advanceToFirstNewTrack: Boolean = false,
+    ) {
         val session = radioSession ?: return
         if (session.isLoadingMore) return
 
@@ -979,13 +979,17 @@ class PlayerViewModel(
                     } else {
                         updatedSession.statusLabel
                     },
-                    isDegraded = isRadioSessionDegraded(
-                        session = updatedSession,
-                        forced = appendedTracks.isEmpty(),
-                    ),
+                    isDegraded = appendedTracks.isEmpty(),
                 )
 
                 if (appendedTracks.isEmpty()) {
+                    if (advanceToFirstNewTrack) {
+                        stopRadioPlayback(
+                            statusLabel = RADIO_DEGRADED_LABEL,
+                            isDegraded = true,
+                        )
+                        return@onSuccess
+                    }
                     maybeEndAiPlaybackIfQueueDrained(
                         currentTrack = playbackState.currentTrack ?: return@onSuccess,
                         currentIndex = playbackState.currentIndex,
@@ -996,12 +1000,19 @@ class PlayerViewModel(
                 }
 
                 val updatedQueue = playbackState.playlist + appendedTracks.map { it.track }
-                val safeIndex = playbackState.currentIndex.coerceIn(0, updatedQueue.lastIndex)
+                val targetIndex = if (advanceToFirstNewTrack) {
+                    val firstAppendedTrackId = appendedTracks.firstOrNull()?.track?.id.orEmpty()
+                    updatedQueue.indexOfFirst { track -> track.id == firstAppendedTrackId }
+                        .takeIf { it >= 0 }
+                        ?: playbackState.currentIndex
+                } else {
+                    playbackState.currentIndex.coerceIn(0, updatedQueue.lastIndex)
+                }
                 commitPlayableQueue(
                     queue = updatedQueue,
-                    index = safeIndex,
-                    playWhenReady = playbackState.isPlaying,
-                    startPositionMs = playbackState.currentPositionMs,
+                    index = targetIndex,
+                    playWhenReady = if (advanceToFirstNewTrack) true else playbackState.isPlaying,
+                    startPositionMs = if (advanceToFirstNewTrack) 0L else playbackState.currentPositionMs,
                     source = PlaybackSource.AI,
                 )
             }.onFailure { error ->
@@ -1020,9 +1031,15 @@ class PlayerViewModel(
         }
     }
 
-    private fun maybeAutoQueueMoreAiRecommendations(force: Boolean = false) {
+    private fun maybeAutoQueueMoreAiRecommendations(
+        force: Boolean = false,
+        advanceToFirstNewTrack: Boolean = false,
+    ) {
         if (activePlaybackSource != PlaybackSource.AI) return
-        queueMoreAiRecommendations(force = force)
+        queueMoreAiRecommendations(
+            force = force,
+            advanceToFirstNewTrack = advanceToFirstNewTrack,
+        )
     }
 
     private fun recordCurrentAiTrackSkipped() {
@@ -1118,9 +1135,15 @@ class PlayerViewModel(
         if (currentIndex != queue.lastIndex) return
         if (isPlaying) return
         if (radioSession?.isLoadingMore == true) return
-        if (latestCompletedRadioTrackId != currentTrack.id) return
         if (currentTrack.durationMs <= 0L) return
         if (playbackState.currentPositionMs < currentTrack.durationMs - 2_000L) return
+
+        recordAiCompletionIfEligible(
+            track = currentTrack,
+            positionMs = playbackState.currentPositionMs,
+            durationMs = currentTrack.durationMs,
+        )
+        if (latestCompletedRadioTrackId != currentTrack.id) return
 
         stopRadioPlayback(
             statusLabel = radioQueueEndedLabel(),
@@ -1180,13 +1203,6 @@ class PlayerViewModel(
         } else {
             RADIO_ENDED_LABEL
         }
-    }
-
-    private fun isRadioSessionDegraded(
-        session: RadioSessionState,
-        forced: Boolean = false,
-    ): Boolean {
-        return forced || session.consecutiveLowYieldCount > 0
     }
 
     private fun applyPlaybackSource(source: PlaybackSource) {
