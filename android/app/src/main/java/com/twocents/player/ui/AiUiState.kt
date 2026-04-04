@@ -26,6 +26,8 @@ data class AiRecommendationUiState(
     val isLoadingMore: Boolean = false,
     val tracks: List<AiRecommendedTrack> = emptyList(),
     val errorMessage: String? = null,
+    val statusLabel: String? = null,
+    val isDegraded: Boolean = false,
     val sourceFavoriteCount: Int = 0,
     val suggestionCount: Int = 0,
     val skippedCount: Int = 0,

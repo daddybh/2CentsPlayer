@@ -193,6 +193,8 @@ fun PlayerApp(
                 queueCount = playbackState.playlist.size,
                 isHeartModeActive = aiRecommendationState.isActive,
                 isHeartModeLoading = aiRecommendationState.isLoading || aiRecommendationState.isLoadingMore,
+                heartModeStatusLabel = aiRecommendationState.statusLabel,
+                isHeartModeDegraded = aiRecommendationState.isDegraded,
                 onSeek = viewModel::seekTo,
                 onPlayPause = viewModel::togglePlayPause,
                 onSkipNext = viewModel::skipNext,
@@ -861,6 +863,8 @@ private fun HeroArtwork(
     queueCount: Int,
     isHeartModeActive: Boolean,
     isHeartModeLoading: Boolean,
+    heartModeStatusLabel: String?,
+    isHeartModeDegraded: Boolean,
     onSeek: (Long) -> Unit,
     onPlayPause: () -> Unit,
     onSkipNext: () -> Unit,
@@ -1059,6 +1063,8 @@ private fun HeroArtwork(
                     HeartModeToggle(
                         isActive = isHeartModeActive,
                         isLoading = isHeartModeLoading,
+                        statusLabel = heartModeStatusLabel,
+                        isDegraded = isHeartModeDegraded,
                         onToggle = { onToggleHeartMode() },
                     )
                 }
@@ -1354,6 +1360,8 @@ private fun CompactTransportButton(
 private fun HeartModeToggle(
     isActive: Boolean,
     isLoading: Boolean,
+    statusLabel: String?,
+    isDegraded: Boolean,
     onToggle: (Boolean) -> Unit,
 ) {
     Surface(
@@ -1386,15 +1394,20 @@ private fun HeartModeToggle(
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
                     Text(
-                        text = "AI 心动模式",
+                        text = "探索电台",
                         style = MaterialTheme.typography.labelLarge,
                         color = if (isActive) TextPrimary else TextSecondary,
                     )
-                    if (isLoading) {
+                    val supportingText = if (isLoading) {
+                        "正在准备电台中"
+                    } else {
+                        statusLabel
+                    }
+                    if (supportingText != null) {
                         Text(
-                            text = "正在准备推荐...",
+                            text = supportingText,
                             style = MaterialTheme.typography.labelSmall,
-                            color = TextTertiary,
+                            color = if (isDegraded) AccentGold else TextTertiary,
                         )
                     }
                 }
