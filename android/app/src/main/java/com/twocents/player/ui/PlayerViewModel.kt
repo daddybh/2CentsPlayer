@@ -984,7 +984,7 @@ class PlayerViewModel(
 
                 if (appendedTracks.isEmpty()) {
                     if (advanceToFirstNewTrack) {
-                        stopRadioPlayback(
+                        stopRadioPlaybackWithPausedFallbackQueue(
                             statusLabel = RADIO_DEGRADED_LABEL,
                             isDegraded = true,
                         )
@@ -1192,6 +1192,41 @@ class PlayerViewModel(
             tracks = emptyList(),
             skippedCount = 0,
             errorMessage = null,
+            statusLabel = statusLabel,
+            isDegraded = isDegraded,
+        )
+    }
+
+    private fun stopRadioPlaybackWithPausedFallbackQueue(
+        statusLabel: String? = null,
+        isDegraded: Boolean = false,
+    ) {
+        val currentTrack = playbackState.currentTrack?.let(::normalizeTrack)
+        if (currentTrack != null && currentTrack.audioUrl.isNotBlank()) {
+            commitPlayableQueue(
+                queue = listOf(currentTrack),
+                index = 0,
+                playWhenReady = false,
+                startPositionMs = playbackState.currentPositionMs,
+                source = PlaybackSource.REGULAR,
+            )
+        } else {
+            playbackState = playbackState.copy(
+                currentTrack = currentTrack,
+                playlist = currentTrack?.let(::listOf).orEmpty(),
+                currentIndex = 0,
+                isPlaying = false,
+                isPreparing = false,
+            )
+            emitPlayerCommand(
+                PlayerCommand.SetPlayWhenReady(
+                    id = nextPlayerCommandId(),
+                    playWhenReady = false,
+                ),
+            )
+        }
+
+        stopRadioPlayback(
             statusLabel = statusLabel,
             isDegraded = isDegraded,
         )
