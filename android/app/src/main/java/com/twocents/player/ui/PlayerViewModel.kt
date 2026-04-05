@@ -16,8 +16,10 @@ import com.twocents.player.data.PlaybackState
 import com.twocents.player.data.RadioFeedbackEvent
 import com.twocents.player.data.RadioFeedbackType
 import com.twocents.player.data.RadioHistoryStore
+import com.twocents.player.data.RadioRecommendationRequest
 import com.twocents.player.data.RadioReplenishmentEngine
 import com.twocents.player.data.RadioSessionState
+import com.twocents.player.data.RadioWaveTargets
 import com.twocents.player.data.Track
 import com.twocents.player.data.classifyCompletion
 import com.twocents.player.data.classifySkip
@@ -37,7 +39,14 @@ class PlayerViewModel(
         const val RADIO_LOADING_LABEL = "正在准备电台中"
         const val RADIO_ENDED_LABEL = "探索电台已结束"
         const val RADIO_DEGRADED_LABEL = "暂时没有更多歌曲"
+        const val RADIO_START_MIN_APPEND = 1
+        const val RADIO_START_RAW_CANDIDATE_LIMIT = 4
         const val SEARCH_PAGE_SIZE = 20
+        val RADIO_START_WAVE_TARGETS = RadioWaveTargets(
+            safeCount = 1,
+            adjacentCount = 1,
+            surpriseCount = 0,
+        )
         val LYRIC_TIMESTAMP_REGEX = Regex("""\[(\d{2}):(\d{2})(?:\.(\d{1,3}))?]""")
         val LYRIC_CREDIT_ROLES = setOf(
             "作词",
@@ -365,6 +374,21 @@ class PlayerViewModel(
                         favorites = favorites,
                         history = radioHistoryStore.loadSnapshot(),
                         session = RadioSessionState(sessionId = nextAiSessionId()),
+                        minimumRequiredAppend = if (playAfterRefresh) {
+                            RADIO_START_MIN_APPEND
+                        } else {
+                            RadioReplenishmentEngine.MIN_SAFE_APPEND
+                        },
+                        requestTransform = if (playAfterRefresh) {
+                            { request: RadioRecommendationRequest ->
+                                request.copy(
+                                    waveTargets = RADIO_START_WAVE_TARGETS,
+                                    rawCandidateLimit = RADIO_START_RAW_CANDIDATE_LIMIT,
+                                )
+                            }
+                        } else {
+                            { request: RadioRecommendationRequest -> request }
+                        },
                     )
                 }
             }.onSuccess { result ->
@@ -400,6 +424,9 @@ class PlayerViewModel(
 
                 if (playAfterRefresh && normalizedTracks.isNotEmpty()) {
                     playResolvedAiRecommendations(normalizedTracks)
+                    if (normalizedTracks.size < RadioReplenishmentEngine.MIN_SAFE_APPEND) {
+                        queueMoreAiRecommendations(force = true)
+                    }
                 } else if (playAfterRefresh && normalizedTracks.isEmpty()) {
                     stopRadioPlayback(
                         statusLabel = RADIO_DEGRADED_LABEL,
@@ -804,8 +831,13 @@ class PlayerViewModel(
             return
         }
 
-        val queueForResolution = normalizedQueue.filter { track ->
+        val targetTrackForResolution = targetTrack.takeIf { track ->
             track.id.isNotBlank() && track.audioUrl.isBlank()
+        }
+        val remainingQueueForResolution = normalizedQueue.filterIndexed { queueIndex, track ->
+            queueIndex != index &&
+                track.id.isNotBlank() &&
+                track.audioUrl.isBlank()
         }
         val requestId = ++latestPlaybackRequestId
 
@@ -822,25 +854,13 @@ class PlayerViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    val resolvedTracks = musicLibraryRepository.resolvePlayableTracks(queueForResolution)
-                    val resolvedTrackMap = resolvedTracks.associateBy { track -> track.id }
-                    normalizedQueue.map { track ->
-                        val resolvedTrack = resolvedTrackMap[track.id]
-                        if (resolvedTrack?.audioUrl.isNullOrBlank()) {
-                            track
-                        } else {
-                            track.copy(
-                                audioUrl = resolvedTrack?.audioUrl.orEmpty(),
-                                durationMs = resolvedTrack?.durationMs
-                                    ?.takeIf { durationMs -> durationMs > 0L }
-                                    ?: track.durationMs,
-                            )
-                        }
-                    }
+                    targetTrackForResolution
+                        ?.let { track -> musicLibraryRepository.resolvePlayableTracks(listOf(track)).firstOrNull() }
+                        ?: targetTrack
                 }
-            }.onSuccess { resolvedQueue ->
+            }.onSuccess { resolvedTargetTrack ->
                 if (requestId != latestPlaybackRequestId) return@onSuccess
-                val resolvedTrack = resolvedQueue.getOrNull(index) ?: targetTrack
+                val resolvedTrack = resolvedTargetTrack ?: targetTrack
                 if (resolvedTrack.audioUrl.isBlank()) {
                     playbackState = playbackState.copy(
                         currentTrack = normalizeTrack(targetTrack),
@@ -854,13 +874,58 @@ class PlayerViewModel(
                     return@onSuccess
                 }
 
+                val queueWithResolvedTarget = normalizedQueue.toMutableList().also { playlist ->
+                    playlist[index] = normalizeTrack(
+                        targetTrack.copy(
+                            audioUrl = resolvedTrack.audioUrl,
+                            durationMs = resolvedTrack.durationMs.takeIf { it > 0L } ?: targetTrack.durationMs,
+                        ),
+                    )
+                }
+
                 commitPlayableQueue(
-                    queue = resolvedQueue.map(::normalizeTrack),
+                    queue = queueWithResolvedTarget,
                     index = index,
                     playWhenReady = playWhenReady,
                     startPositionMs = startPositionMs,
                     source = source,
                 )
+
+                if (remainingQueueForResolution.isEmpty()) return@onSuccess
+
+                viewModelScope.launch {
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            musicLibraryRepository.resolvePlayableTracks(remainingQueueForResolution)
+                        }
+                    }.onSuccess { resolvedTracks ->
+                        if (requestId != latestPlaybackRequestId) return@onSuccess
+                        val currentPlaybackTrack = playbackState.currentTrack ?: return@onSuccess
+                        if (currentPlaybackTrack.id != queueWithResolvedTarget[index].id) return@onSuccess
+
+                        val resolvedTrackMap = resolvedTracks.associateBy { track -> track.id }
+                        val mergedQueue = playbackState.playlist.map { track ->
+                            val resolvedQueueTrack = resolvedTrackMap[track.id]
+                            if (resolvedQueueTrack?.audioUrl.isNullOrBlank()) {
+                                track
+                            } else {
+                                track.copy(
+                                    audioUrl = resolvedQueueTrack?.audioUrl.orEmpty(),
+                                    durationMs = resolvedQueueTrack?.durationMs
+                                        ?.takeIf { durationMs -> durationMs > 0L }
+                                        ?: track.durationMs,
+                                )
+                            }
+                        }
+                        commitPlayableQueue(
+                            queue = mergedQueue.map(::normalizeTrack),
+                            index = playbackState.currentIndex.coerceIn(0, mergedQueue.lastIndex),
+                            playWhenReady = playbackState.isPlaying,
+                            startPositionMs = playbackState.currentPositionMs,
+                            source = source,
+                        )
+                    }
+                }
             }.onFailure {
                 if (requestId != latestPlaybackRequestId) return@onFailure
                 playbackState = playbackState.copy(

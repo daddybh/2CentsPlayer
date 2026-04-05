@@ -4,17 +4,29 @@ import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import com.twocents.player.data.AiRecommendedTrack
+import com.twocents.player.data.MusicSearchPage
+import com.twocents.player.data.MusicSourceRepository
+import com.twocents.player.data.MusicLibraryRepository
 import com.twocents.player.data.RadioFeedbackType
 import com.twocents.player.data.RadioHistoryStore
 import com.twocents.player.data.RadioSessionState
 import com.twocents.player.data.Track
 import com.twocents.player.data.TrackSource
+import com.twocents.player.data.sourceTrackId
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class PlayerViewModelTest {
     @Test
     fun toggleHeartMode_whenRadioActive_unwindsToSingleTrackRegularQueue() {
@@ -87,6 +99,53 @@ class PlayerViewModelTest {
         assertFalse(history.positiveTrackIds.contains(skippedTrack.id))
     }
 
+    @Test
+    fun prepareTrackForPlayback_resolvesCurrentTrackBeforeRemainingQueue() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val application = FakeApplication()
+            val viewModel = PlayerViewModel(application)
+            val neteaseSource = RecordingMusicSourceRepository(source = TrackSource.NETEASE)
+            viewModel.setPrivateField(
+                "musicLibraryRepository",
+                MusicLibraryRepository(
+                    neteaseRepository = neteaseSource,
+                    kuwoRepository = RecordingMusicSourceRepository(source = TrackSource.KUWO),
+                ),
+            )
+            val queue = listOf(
+                unresolvedTrack(id = "start"),
+                unresolvedTrack(id = "next-1"),
+                unresolvedTrack(id = "next-2"),
+            )
+
+            viewModel.invokePrepareTrackForPlayback(
+                queue = queue,
+                index = 0,
+                playWhenReady = true,
+                startPositionMs = 0L,
+                sourceName = "REGULAR",
+            )
+            advanceUntilIdle()
+            var attempts = 0
+            while (neteaseSource.resolveCalls.size < 2 && attempts < 50) {
+                advanceUntilIdle()
+                Thread.sleep(20L)
+                attempts += 1
+            }
+
+            assertEquals(
+                listOf(
+                    listOf("netease:start"),
+                    listOf("netease:next-1", "netease:next-2"),
+                ),
+                neteaseSource.resolveCalls,
+            )
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
     private fun radioSession(queue: List<Track>): RadioSessionState {
         return RadioSessionState(
             sessionId = 1L,
@@ -107,6 +166,18 @@ class PlayerViewModelTest {
             artist = "Artist $id",
             durationMs = durationMs,
             audioUrl = "https://audio.example/$id.mp3",
+        )
+    }
+
+    private fun unresolvedTrack(id: String): Track {
+        return Track(
+            id = "netease:$id",
+            source = TrackSource.NETEASE,
+            sourceId = id,
+            title = "Title $id",
+            artist = "Artist $id",
+            durationMs = 180_000L,
+            audioUrl = "",
         )
     }
 
@@ -152,6 +223,26 @@ class PlayerViewModelTest {
         method.invoke(this)
     }
 
+    private fun PlayerViewModel.invokePrepareTrackForPlayback(
+        queue: List<Track>,
+        index: Int,
+        playWhenReady: Boolean,
+        startPositionMs: Long,
+        sourceName: String,
+    ) {
+        val enumValue = playbackSourceEnum(sourceName)
+        val method = PlayerViewModel::class.java.getDeclaredMethod(
+            "prepareTrackForPlayback",
+            List::class.java,
+            Int::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+            Long::class.javaPrimitiveType,
+            enumValue.javaClass,
+        )
+        method.isAccessible = true
+        method.invoke(this, queue, index, playWhenReady, startPositionMs, enumValue)
+    }
+
     private class FakeApplication : Application() {
         private val preferencesByName = mutableMapOf<String, SharedPreferences>()
 
@@ -161,6 +252,32 @@ class PlayerViewModelTest {
         ): SharedPreferences {
             val safeName = name ?: error("SharedPreferences name required")
             return preferencesByName.getOrPut(safeName) { FakeSharedPreferences() }
+        }
+    }
+
+    private class RecordingMusicSourceRepository(
+        override val source: TrackSource,
+    ) : MusicSourceRepository {
+        val resolveCalls = mutableListOf<List<String>>()
+
+        override fun searchTracks(
+            keyword: String,
+            limit: Int,
+            offset: Int,
+        ): List<Track> = emptyList()
+
+        override fun findBestMatchTrack(
+            title: String,
+            artist: String,
+        ): Track? = null
+
+        override fun fetchLyrics(track: Track): String? = null
+
+        override fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
+            resolveCalls += tracks.map { it.id }
+            return tracks.map { track ->
+                track.copy(audioUrl = "https://audio.example/${track.sourceTrackId()}.mp3")
+            }
         }
     }
 

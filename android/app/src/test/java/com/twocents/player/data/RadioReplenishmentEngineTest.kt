@@ -148,6 +148,49 @@ class RadioReplenishmentEngineTest {
         )
     }
 
+    @Test
+    fun replenish_allowsFastStartWithSmallerInitialWave() {
+        val candidateSource = FakeRadioCandidateSource(
+            responses = listOf(
+                listOf(
+                    suggestedTrack("fast-start", "Fast Artist", RadioCandidateBucket.SAFE),
+                ),
+            ),
+        )
+        val trackLookup = FakeRadioTrackLookup(
+            matchedTracks = mapOf(
+                "fast-start" to track(
+                    id = "fast-start",
+                    artist = "Fast Artist",
+                    audioUrl = "https://audio.example/fast-start.mp3",
+                ),
+            ),
+        )
+        val engine = RadioReplenishmentEngine(
+            candidateSource = candidateSource,
+            trackLookup = trackLookup,
+        )
+
+        val result = engine.replenish(
+            settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
+            favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
+            history = RadioHistorySnapshot(),
+            session = RadioSessionState(sessionId = 21L),
+            minimumRequiredAppend = 1,
+            requestTransform = { request ->
+                request.copy(
+                    waveTargets = RadioWaveTargets(1, 1, 0),
+                    rawCandidateLimit = 4,
+                )
+            },
+        )
+
+        assertEquals(1, candidateSource.callCount)
+        assertEquals(1, result.appendedRecommendations.size)
+        assertEquals(RadioWaveTargets(1, 1, 0), candidateSource.requests.single().waveTargets)
+        assertEquals(4, candidateSource.requests.single().rawCandidateLimit)
+    }
+
     private fun suggestedTrack(
         title: String,
         artist: String,

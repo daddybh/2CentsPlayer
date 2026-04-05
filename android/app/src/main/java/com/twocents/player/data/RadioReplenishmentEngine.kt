@@ -17,6 +17,8 @@ class RadioReplenishmentEngine(
         favorites: List<Track>,
         history: RadioHistorySnapshot,
         session: RadioSessionState,
+        minimumRequiredAppend: Int = MIN_SAFE_APPEND,
+        requestTransform: (RadioRecommendationRequest) -> RadioRecommendationRequest = { it },
     ): RadioReplenishmentResult {
         var attempts = 0
         var workingSession = session
@@ -24,7 +26,7 @@ class RadioReplenishmentEngine(
         var appended = emptyList<RadioResolvedCandidate>()
         var forceRecoveringRetry = false
 
-        while (attempts < MAX_ATTEMPTS && appended.size < MIN_SAFE_APPEND) {
+        while (attempts < MAX_ATTEMPTS && appended.size < minimumRequiredAppend) {
             val planningSession = workingSession.copy(
                 queuedRecommendations = workingSession.queuedRecommendations + appended.map { it.recommendation },
             )
@@ -35,7 +37,7 @@ class RadioReplenishmentEngine(
                     waveTargets = RadioWaveTargets(5, 1, 0),
                 )
             } else {
-                plannedRequest
+                requestTransform(plannedRequest)
             }
             workingSession = workingSession.copy(
                 boundaryState = request.boundaryState,
@@ -87,7 +89,7 @@ class RadioReplenishmentEngine(
             )
             appended = appended + newlyAppended
 
-            if (appended.size >= MIN_SAFE_APPEND) {
+            if (appended.size >= minimumRequiredAppend) {
                 break
             }
 
