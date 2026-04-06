@@ -143,6 +143,8 @@ class PlayerViewModel(
             if (cached.isNotEmpty()) {
                 restoreCachedAiRecommendations(cached)
             } else if (radioSessionStore.isRadioActive()) {
+                activePlaybackSource = PlaybackSource.AI
+                aiRecommendationState = aiRecommendationState.copy(isActive = true)
                 refreshAiRecommendations(playAfterRefresh = true)
             } else {
                 refreshAiRecommendations()
