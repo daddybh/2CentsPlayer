@@ -1459,6 +1459,9 @@ class PlayerViewModel(
         val normalizedTracks = cached.map { recommendation ->
             recommendation.copy(track = normalizeTrack(recommendation.track))
         }
+        val queue = normalizedTracks.map { it.track }
+        if (queue.isEmpty()) return
+
         val session = RadioSessionState(
             sessionId = nextAiSessionId(),
             queuedRecommendations = normalizedTracks,
@@ -1466,7 +1469,9 @@ class PlayerViewModel(
         radioSession = session
         latestCompletedRadioTrackId = null
         suppressedRadioCompletionTrackId = null
+        activePlaybackSource = PlaybackSource.AI
         aiRecommendationState = aiRecommendationState.copy(
+            isActive = true,
             isLoading = false,
             isLoadingMore = false,
             tracks = normalizedTracks,
@@ -1474,6 +1479,13 @@ class PlayerViewModel(
             sourceFavoriteCount = favoritesState.tracks.size,
             statusLabel = session.statusLabel,
             isDegraded = false,
+        )
+
+        prepareTrackForPlayback(
+            queue = queue,
+            index = 0,
+            playWhenReady = false,
+            source = PlaybackSource.AI,
         )
     }
 
