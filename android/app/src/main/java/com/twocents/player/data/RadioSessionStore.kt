@@ -60,12 +60,24 @@ class RadioSessionStore(context: Context) {
         preferences.edit().putString(KEY_RECOMMENDATIONS, array.toString()).apply()
     }
 
+    fun isRadioActive(): Boolean {
+        return preferences.getBoolean(KEY_RADIO_ACTIVE, false)
+    }
+
+    fun setRadioActive(active: Boolean) {
+        preferences.edit().putBoolean(KEY_RADIO_ACTIVE, active).apply()
+    }
+
     fun clear() {
-        preferences.edit().remove(KEY_RECOMMENDATIONS).apply()
+        preferences.edit()
+            .remove(KEY_RECOMMENDATIONS)
+            .remove(KEY_RADIO_ACTIVE)
+            .apply()
     }
 
     private companion object {
         const val PREFERENCES_NAME = "two_cents_player"
         const val KEY_RECOMMENDATIONS = "radio_session_recommendations_v1"
+        const val KEY_RADIO_ACTIVE = "radio_active_v1"
     }
 }

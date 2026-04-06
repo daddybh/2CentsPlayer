@@ -2,6 +2,7 @@ package com.twocents.player.data
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
 class MusicLibraryRepository(
@@ -88,21 +89,26 @@ class MusicLibraryRepository(
         return null
     }
 
-    override fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
+    override suspend fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
         if (tracks.isEmpty()) return emptyList()
 
         val normalizedTracks = tracks.map(Track::withCanonicalIdentity)
-        val resolvedById = buildMap(normalizedTracks.size) {
-            TrackSource.entries.forEach { source ->
+        val resolvedById = coroutineScope {
+            val deferredResults = TrackSource.entries.mapNotNull { source ->
                 val sourceTracks = normalizedTracks.filter { it.source == source }
-                if (sourceTracks.isEmpty()) return@forEach
+                if (sourceTracks.isEmpty()) return@mapNotNull null
 
-                repositoryFor(source)
-                    .resolvePlayableTracks(sourceTracks)
-                    .map(Track::withCanonicalIdentity)
-                    .forEach { resolvedTrack ->
-                        put(resolvedTrack.id, resolvedTrack)
-                    }
+                async(Dispatchers.IO) {
+                    repositoryFor(source)
+                        .resolvePlayableTracks(sourceTracks)
+                        .map(Track::withCanonicalIdentity)
+                }
+            }
+
+            buildMap(normalizedTracks.size) {
+                deferredResults.awaitAll().flatten().forEach { resolvedTrack ->
+                    put(resolvedTrack.id, resolvedTrack)
+                }
             }
         }
 

@@ -57,12 +57,14 @@ class MusicLibraryRepositoryTest {
             kuwoRepository = kuwo,
         )
 
-        val result = repository.resolvePlayableTracks(
-            listOf(
-                track(source = TrackSource.NETEASE, sourceId = "1"),
-                track(source = TrackSource.KUWO, sourceId = "2"),
-            ),
-        )
+        val result = runBlocking {
+            repository.resolvePlayableTracks(
+                listOf(
+                    track(source = TrackSource.NETEASE, sourceId = "1"),
+                    track(source = TrackSource.KUWO, sourceId = "2"),
+                ),
+            )
+        }
 
         assertEquals(
             listOf("https://netease.example/1.mp3", "https://kuwo.example/2.mp3"),

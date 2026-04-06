@@ -142,6 +142,8 @@ class PlayerViewModel(
             val cached = radioSessionStore.loadRecommendations()
             if (cached.isNotEmpty()) {
                 restoreCachedAiRecommendations(cached)
+            } else if (radioSessionStore.isRadioActive()) {
+                refreshAiRecommendations(playAfterRefresh = true)
             } else {
                 refreshAiRecommendations()
             }
@@ -324,12 +326,14 @@ class PlayerViewModel(
 
     fun toggleHeartMode() {
         if (activePlaybackSource == PlaybackSource.AI) {
+            radioSessionStore.setRadioActive(false)
             unwindRadioPlaybackToRegularQueue(
                 track = playbackState.currentTrack,
                 playWhenReady = playbackState.isPlaying,
                 startPositionMs = playbackState.currentPositionMs,
             )
         } else {
+            radioSessionStore.setRadioActive(true)
             playAiRecommendations()
         }
     }

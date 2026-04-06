@@ -1,5 +1,10 @@
 package com.twocents.player.data
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+
 data class RadioReplenishmentResult(
     val appendedRecommendations: List<AiRecommendedTrack>,
     val suggestionCount: Int,
@@ -47,19 +52,23 @@ class RadioReplenishmentEngine(
             val suggestions = candidateSource.requestRadioCandidates(settings, request)
             suggestionCount += suggestions.size
 
-            val matchedCandidates = suggestions.mapNotNull { suggestion ->
-                val matchedTrack = trackLookup.findBestMatchTrack(
-                    title = suggestion.title,
-                    artist = suggestion.artist,
-                ) ?: return@mapNotNull null
+            val matchedCandidates = coroutineScope {
+                suggestions.map { suggestion ->
+                    async(Dispatchers.IO) {
+                        val matchedTrack = trackLookup.findBestMatchTrack(
+                            title = suggestion.title,
+                            artist = suggestion.artist,
+                        ) ?: return@async null
 
-                RadioResolvedCandidate(
-                    recommendation = AiRecommendedTrack(
-                        track = matchedTrack,
-                        reason = suggestion.reason,
-                    ),
-                    bucket = suggestion.bucket,
-                )
+                        RadioResolvedCandidate(
+                            recommendation = AiRecommendedTrack(
+                                track = matchedTrack,
+                                reason = suggestion.reason,
+                            ),
+                            bucket = suggestion.bucket,
+                        )
+                    }
+                }.awaitAll().filterNotNull()
             }.filterNot { candidate ->
                 candidate.recommendation.track.isLocallyExcluded(request)
             }

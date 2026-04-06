@@ -253,7 +253,7 @@ class RadioReplenishmentEngineTest {
             artist: String,
         ): Track? = matchedTracks[title]
 
-        override fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
+        override suspend fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
             return tracks.mapNotNull { track -> resolvedTracks[track.id] }
         }
     }

@@ -13,5 +13,5 @@ interface RadioTrackLookup {
         artist: String = "",
     ): Track?
 
-    fun resolvePlayableTracks(tracks: List<Track>): List<Track>
+    suspend fun resolvePlayableTracks(tracks: List<Track>): List<Track>
 }
