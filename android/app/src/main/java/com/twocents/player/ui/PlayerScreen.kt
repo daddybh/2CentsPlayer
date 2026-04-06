@@ -205,7 +205,7 @@ fun PlayerApp(
             )
 
             QueueSection(
-                queue = orderedQueue.take(4),
+                queue = orderedQueue,
                 currentIndex = playbackState.currentIndex,
                 isPlaying = playbackState.isPlaying,
                 onSelectTrack = viewModel::selectPlaylistTrack,
