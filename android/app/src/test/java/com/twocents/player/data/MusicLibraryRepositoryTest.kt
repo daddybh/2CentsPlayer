@@ -1,5 +1,6 @@
 package com.twocents.player.data
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -26,12 +27,14 @@ class MusicLibraryRepositoryTest {
             kuwoRepository = kuwo,
         )
 
-        val result = repository.searchTracks(
-            keyword = "周杰伦",
-            limitPerSource = 20,
-            neteaseOffset = 0,
-            kuwoOffset = 0,
-        )
+        val result = runBlocking {
+            repository.searchTracks(
+                keyword = "周杰伦",
+                limitPerSource = 20,
+                neteaseOffset = 0,
+                kuwoOffset = 0,
+            )
+        }
 
         assertEquals(
             listOf("netease:1", "netease:2", "kuwo:10"),

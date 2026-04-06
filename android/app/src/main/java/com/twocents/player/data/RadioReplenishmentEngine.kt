@@ -12,7 +12,7 @@ class RadioReplenishmentEngine(
     private val planner: RadioRecommendationPlanner = RadioRecommendationPlanner(),
     private val composer: RadioQueueComposer = RadioQueueComposer(),
 ) {
-    fun replenish(
+    suspend fun replenish(
         settings: AiServiceConfig,
         favorites: List<Track>,
         history: RadioHistorySnapshot,

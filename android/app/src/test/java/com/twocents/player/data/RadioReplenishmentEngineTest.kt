@@ -1,5 +1,6 @@
 package com.twocents.player.data
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -43,12 +44,14 @@ class RadioReplenishmentEngineTest {
             trackLookup = trackLookup,
         )
 
-        val result = engine.replenish(
-            settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
-            favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
-            history = RadioHistorySnapshot(),
-            session = RadioSessionState(sessionId = 7L),
-        )
+        val result = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
+                favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
+                history = RadioHistorySnapshot(),
+                session = RadioSessionState(sessionId = 7L),
+            )
+        }
 
         assertEquals(2, candidateSource.callCount)
         assertEquals(4, result.appendedRecommendations.size)
@@ -84,12 +87,14 @@ class RadioReplenishmentEngineTest {
             trackLookup = trackLookup,
         )
 
-        val result = engine.replenish(
-            settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
-            favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
-            history = RadioHistorySnapshot(),
-            session = RadioSessionState(sessionId = 11L),
-        )
+        val result = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
+                favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
+                history = RadioHistorySnapshot(),
+                session = RadioSessionState(sessionId = 11L),
+            )
+        }
 
         assertTrue(result.appendedRecommendations.isEmpty())
         assertEquals(3, candidateSource.callCount)
@@ -128,18 +133,20 @@ class RadioReplenishmentEngineTest {
             trackLookup = trackLookup,
         )
 
-        val result = engine.replenish(
-            settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
-            favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
-            history = RadioHistorySnapshot(
-                negativeTrackIds = setOf("negative-1"),
-                recentArtistKeys = listOf("blocked artist"),
-            ),
-            session = RadioSessionState(
-                sessionId = 13L,
-                playedTrackIds = setOf("played-1"),
-            ),
-        )
+        val result = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
+                favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
+                history = RadioHistorySnapshot(
+                    negativeTrackIds = setOf("negative-1"),
+                    recentArtistKeys = listOf("blocked artist"),
+                ),
+                session = RadioSessionState(
+                    sessionId = 13L,
+                    playedTrackIds = setOf("played-1"),
+                ),
+            )
+        }
 
         assertEquals(1, candidateSource.callCount)
         assertEquals(
@@ -171,19 +178,21 @@ class RadioReplenishmentEngineTest {
             trackLookup = trackLookup,
         )
 
-        val result = engine.replenish(
-            settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
-            favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
-            history = RadioHistorySnapshot(),
-            session = RadioSessionState(sessionId = 21L),
-            minimumRequiredAppend = 1,
-            requestTransform = { request ->
-                request.copy(
-                    waveTargets = RadioWaveTargets(1, 1, 0),
-                    rawCandidateLimit = 4,
-                )
-            },
-        )
+        val result = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
+                favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
+                history = RadioHistorySnapshot(),
+                session = RadioSessionState(sessionId = 21L),
+                minimumRequiredAppend = 1,
+                requestTransform = { request ->
+                    request.copy(
+                        waveTargets = RadioWaveTargets(1, 1, 0),
+                        rawCandidateLimit = 4,
+                    )
+                },
+            )
+        }
 
         assertEquals(1, candidateSource.callCount)
         assertEquals(1, result.appendedRecommendations.size)
@@ -239,7 +248,7 @@ class RadioReplenishmentEngineTest {
         private val matchedTracks: Map<String, Track>,
         private val resolvedTracks: Map<String, Track> = emptyMap(),
     ) : RadioTrackLookup {
-        override fun findBestMatchTrack(
+        override suspend fun findBestMatchTrack(
             title: String,
             artist: String,
         ): Track? = matchedTracks[title]

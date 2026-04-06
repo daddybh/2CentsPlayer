@@ -1,27 +1,38 @@
 package com.twocents.player.data
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+
 class MusicLibraryRepository(
     private val neteaseRepository: MusicSourceRepository = NeteaseSearchRepository(),
     private val kuwoRepository: MusicSourceRepository = KuwoSearchRepository(),
 ) : RadioTrackLookup {
-    fun searchTracks(
+    suspend fun searchTracks(
         keyword: String,
         limitPerSource: Int = 20,
         neteaseOffset: Int = 0,
         kuwoOffset: Int = 0,
-    ): MusicSearchPage {
-        val neteaseTracks = neteaseRepository.searchTracks(
-            keyword = keyword,
-            limit = limitPerSource,
-            offset = neteaseOffset,
-        ).map(Track::withCanonicalIdentity)
-        val kuwoTracks = kuwoRepository.searchTracks(
-            keyword = keyword,
-            limit = limitPerSource,
-            offset = kuwoOffset,
-        ).map(Track::withCanonicalIdentity)
+    ): MusicSearchPage = coroutineScope {
+        val neteaseDeferred = async(Dispatchers.IO) {
+            neteaseRepository.searchTracks(
+                keyword = keyword,
+                limit = limitPerSource,
+                offset = neteaseOffset,
+            ).map(Track::withCanonicalIdentity)
+        }
+        val kuwoDeferred = async(Dispatchers.IO) {
+            kuwoRepository.searchTracks(
+                keyword = keyword,
+                limit = limitPerSource,
+                offset = kuwoOffset,
+            ).map(Track::withCanonicalIdentity)
+        }
 
-        return MusicSearchPage(
+        val neteaseTracks = neteaseDeferred.await()
+        val kuwoTracks = kuwoDeferred.await()
+
+        MusicSearchPage(
             tracks = mergeSearchTracks(
                 primary = neteaseTracks,
                 secondary = kuwoTracks,
@@ -33,18 +44,25 @@ class MusicLibraryRepository(
         )
     }
 
-    override fun findBestMatchTrack(
+    override suspend fun findBestMatchTrack(
         title: String,
         artist: String,
-    ): Track? {
+    ): Track? = coroutineScope {
+        val neteaseDeferred = async(Dispatchers.IO) {
+            runCatching { neteaseRepository.findBestMatchTrack(title, artist) }.getOrNull()
+        }
+        val kuwoDeferred = async(Dispatchers.IO) {
+            runCatching { kuwoRepository.findBestMatchTrack(title, artist) }.getOrNull()
+        }
+
         val candidates = listOfNotNull(
-            neteaseRepository.findBestMatchTrack(title, artist),
-            kuwoRepository.findBestMatchTrack(title, artist),
+            neteaseDeferred.await(),
+            kuwoDeferred.await(),
         ).map(Track::withCanonicalIdentity)
 
-        if (candidates.isEmpty()) return null
+        if (candidates.isEmpty()) return@coroutineScope null
 
-        return candidates.maxByOrNull { candidate ->
+        candidates.maxByOrNull { candidate ->
             scoreTrackMatch(
                 track = candidate,
                 title = title,

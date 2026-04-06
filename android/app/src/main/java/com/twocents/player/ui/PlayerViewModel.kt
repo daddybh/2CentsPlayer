@@ -12,6 +12,7 @@ import com.twocents.player.data.AiServiceConfig
 import com.twocents.player.data.AiSettingsStore
 import com.twocents.player.data.FavoritesStore
 import com.twocents.player.data.MusicLibraryRepository
+import com.twocents.player.data.RadioSessionStore
 import com.twocents.player.data.PlaybackState
 import com.twocents.player.data.RadioFeedbackEvent
 import com.twocents.player.data.RadioFeedbackType
@@ -82,6 +83,7 @@ class PlayerViewModel(
     private val aiSettingsStore = AiSettingsStore(application)
     private val musicLibraryRepository = MusicLibraryRepository()
     private val favoritesStore = FavoritesStore(application)
+    private val radioSessionStore = RadioSessionStore(application)
     private val radioHistoryStore = RadioHistoryStore.fromContext(application)
     private val radioEngine = RadioReplenishmentEngine(
         candidateSource = aiRecommendationRepository,
@@ -137,7 +139,12 @@ class PlayerViewModel(
 
     init {
         if (initialAiSettings.isComplete && initialFavorites.isNotEmpty()) {
-            refreshAiRecommendations()
+            val cached = radioSessionStore.loadRecommendations()
+            if (cached.isNotEmpty()) {
+                restoreCachedAiRecommendations(cached)
+            } else {
+                refreshAiRecommendations()
+            }
         }
     }
 
@@ -401,6 +408,7 @@ class PlayerViewModel(
                 radioSession = normalizedSession
                 latestCompletedRadioTrackId = null
                 suppressedRadioCompletionTrackId = null
+                persistRadioRecommendations(normalizedTracks)
 
                 aiRecommendationState = aiRecommendationState.copy(
                     isLoading = false,
@@ -1043,6 +1051,7 @@ class PlayerViewModel(
                     lastAutoAppendRemainingCount = nextSessionState.lastAutoAppendRemainingCount,
                 )
                 radioSession = updatedSession
+                persistRadioRecommendations(updatedSession.queuedRecommendations)
                 aiRecommendationState = aiRecommendationState.copy(
                     isLoadingMore = false,
                     tracks = updatedSession.queuedRecommendations,
@@ -1188,6 +1197,7 @@ class PlayerViewModel(
         radioSession = session.copy(
             playedTrackIds = session.playedTrackIds + normalizedTrack.id,
         )
+        evictPlayedRecommendationFromCache(normalizedTrack.id)
     }
 
     private fun maybeRecordAiReplay(targetPositionMs: Long) {
@@ -1302,6 +1312,7 @@ class PlayerViewModel(
         radioSession = null
         latestCompletedRadioTrackId = null
         suppressedRadioCompletionTrackId = null
+        radioSessionStore.clear()
         aiRecommendationState = aiRecommendationState.copy(
             isActive = false,
             isLoading = false,
@@ -1435,12 +1446,49 @@ class PlayerViewModel(
     }
 
     private fun clearAiRecommendations(errorMessage: String? = null) {
+        radioSessionStore.clear()
         aiRecommendationState = AiRecommendationUiState(
             isActive = activePlaybackSource == PlaybackSource.AI,
             errorMessage = errorMessage,
             statusLabel = aiRecommendationState.statusLabel,
             isDegraded = aiRecommendationState.isDegraded,
         )
+    }
+
+    private fun restoreCachedAiRecommendations(cached: List<AiRecommendedTrack>) {
+        val normalizedTracks = cached.map { recommendation ->
+            recommendation.copy(track = normalizeTrack(recommendation.track))
+        }
+        val session = RadioSessionState(
+            sessionId = nextAiSessionId(),
+            queuedRecommendations = normalizedTracks,
+        )
+        radioSession = session
+        latestCompletedRadioTrackId = null
+        suppressedRadioCompletionTrackId = null
+        aiRecommendationState = aiRecommendationState.copy(
+            isLoading = false,
+            isLoadingMore = false,
+            tracks = normalizedTracks,
+            errorMessage = null,
+            sourceFavoriteCount = favoritesState.tracks.size,
+            statusLabel = session.statusLabel,
+            isDegraded = false,
+        )
+    }
+
+    private fun persistRadioRecommendations(recommendations: List<AiRecommendedTrack>) {
+        radioSessionStore.saveRecommendations(recommendations)
+    }
+
+    private fun evictPlayedRecommendationFromCache(trackId: String) {
+        val session = radioSession ?: return
+        val remaining = session.queuedRecommendations.filter { it.track.id != trackId }
+        if (remaining.isEmpty()) {
+            radioSessionStore.clear()
+        } else {
+            radioSessionStore.saveRecommendations(remaining)
+        }
     }
 
     private fun mergeSearchResults(

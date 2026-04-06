@@ -8,7 +8,7 @@ interface RadioCandidateSource {
 }
 
 interface RadioTrackLookup {
-    fun findBestMatchTrack(
+    suspend fun findBestMatchTrack(
         title: String,
         artist: String = "",
     ): Track?
