@@ -68,6 +68,10 @@ class RadioSessionStore(context: Context) {
         preferences.edit().putBoolean(KEY_RADIO_ACTIVE, active).apply()
     }
 
+    fun clearRecommendations() {
+        preferences.edit().remove(KEY_RECOMMENDATIONS).apply()
+    }
+
     fun clear() {
         preferences.edit()
             .remove(KEY_RECOMMENDATIONS)

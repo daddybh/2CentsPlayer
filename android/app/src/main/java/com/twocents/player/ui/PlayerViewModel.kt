@@ -1316,7 +1316,7 @@ class PlayerViewModel(
         radioSession = null
         latestCompletedRadioTrackId = null
         suppressedRadioCompletionTrackId = null
-        radioSessionStore.clear()
+        radioSessionStore.clearRecommendations()
         aiRecommendationState = aiRecommendationState.copy(
             isActive = false,
             isLoading = false,
@@ -1450,7 +1450,7 @@ class PlayerViewModel(
     }
 
     private fun clearAiRecommendations(errorMessage: String? = null) {
-        radioSessionStore.clear()
+        radioSessionStore.clearRecommendations()
         aiRecommendationState = AiRecommendationUiState(
             isActive = activePlaybackSource == PlaybackSource.AI,
             errorMessage = errorMessage,
@@ -1501,7 +1501,7 @@ class PlayerViewModel(
         val session = radioSession ?: return
         val remaining = session.queuedRecommendations.filter { it.track.id != trackId }
         if (remaining.isEmpty()) {
-            radioSessionStore.clear()
+            radioSessionStore.clearRecommendations()
         } else {
             radioSessionStore.saveRecommendations(remaining)
         }
