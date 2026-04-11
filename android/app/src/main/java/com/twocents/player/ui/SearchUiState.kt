@@ -3,7 +3,6 @@ package com.twocents.player.ui
 import com.twocents.player.data.Track
 
 data class SearchUiState(
-    val isVisible: Boolean = false,
     val query: String = "",
     val activeQuery: String = "",
     val isLoading: Boolean = false,
