@@ -200,6 +200,63 @@ class RadioReplenishmentEngineTest {
         assertEquals(4, candidateSource.requests.single().rawCandidateLimit)
     }
 
+    @Test
+    fun replenish_fastStartStopsAfterFirstPlayableCandidate() {
+        val candidateSource = FakeRadioCandidateSource(
+            responses = listOf(
+                listOf(
+                    suggestedTrack("first-playable", "Artist 1", RadioCandidateBucket.SAFE),
+                    suggestedTrack("second-should-not-match", "Artist 2", RadioCandidateBucket.ADJACENT),
+                    suggestedTrack("third-should-not-match", "Artist 3", RadioCandidateBucket.SURPRISE),
+                ),
+            ),
+        )
+        val trackLookup = FakeRadioTrackLookup(
+            matchedTracks = mapOf(
+                "first-playable" to track(
+                    id = "first-playable",
+                    artist = "Artist 1",
+                    audioUrl = "https://audio.example/first-playable.mp3",
+                ),
+                "second-should-not-match" to track(
+                    id = "second-should-not-match",
+                    artist = "Artist 2",
+                    audioUrl = "https://audio.example/second.mp3",
+                ),
+                "third-should-not-match" to track(
+                    id = "third-should-not-match",
+                    artist = "Artist 3",
+                    audioUrl = "https://audio.example/third.mp3",
+                ),
+            ),
+        )
+        val engine = RadioReplenishmentEngine(
+            candidateSource = candidateSource,
+            trackLookup = trackLookup,
+        )
+
+        val result = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
+                favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
+                history = RadioHistorySnapshot(),
+                session = RadioSessionState(sessionId = 31L),
+                minimumRequiredAppend = 1,
+                requestTransform = { request ->
+                    request.copy(
+                        waveTargets = RadioWaveTargets(1, 1, 0),
+                        rawCandidateLimit = 4,
+                    )
+                },
+            )
+        }
+
+        assertEquals(1, result.appendedRecommendations.size)
+        assertEquals(listOf("first-playable"), result.appendedRecommendations.map { it.track.id })
+        assertEquals(listOf("first-playable"), trackLookup.matchedTitles)
+        assertTrue(trackLookup.resolveRequests.isEmpty())
+    }
+
     private fun suggestedTrack(
         title: String,
         artist: String,
@@ -248,12 +305,19 @@ class RadioReplenishmentEngineTest {
         private val matchedTracks: Map<String, Track>,
         private val resolvedTracks: Map<String, Track> = emptyMap(),
     ) : RadioTrackLookup {
+        val matchedTitles = mutableListOf<String>()
+        val resolveRequests = mutableListOf<List<String>>()
+
         override suspend fun findBestMatchTrack(
             title: String,
             artist: String,
-        ): Track? = matchedTracks[title]
+        ): Track? {
+            matchedTitles += title
+            return matchedTracks[title]
+        }
 
         override suspend fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
+            resolveRequests += tracks.map { it.id }
             return tracks.mapNotNull { track -> resolvedTracks[track.id] }
         }
     }

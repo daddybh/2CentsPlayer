@@ -52,50 +52,60 @@ class RadioReplenishmentEngine(
             val suggestions = candidateSource.requestRadioCandidates(settings, request)
             suggestionCount += suggestions.size
 
-            val matchedCandidates = coroutineScope {
-                suggestions.map { suggestion ->
-                    async(Dispatchers.IO) {
-                        val matchedTrack = trackLookup.findBestMatchTrack(
-                            title = suggestion.title,
-                            artist = suggestion.artist,
-                        ) ?: return@async null
+            val existingQueue = workingSession.queuedRecommendations + appended.map { it.recommendation }
+            val newlyAppended = if (minimumRequiredAppend <= 1) {
+                resolveFastStartCandidates(
+                    suggestions = suggestions,
+                    request = request,
+                    existingQueue = existingQueue,
+                    boundaryState = workingSession.boundaryState,
+                )
+            } else {
+                val matchedCandidates = coroutineScope {
+                    suggestions.map { suggestion ->
+                        async(Dispatchers.IO) {
+                            val matchedTrack = trackLookup.findBestMatchTrack(
+                                title = suggestion.title,
+                                artist = suggestion.artist,
+                            ) ?: return@async null
 
-                        RadioResolvedCandidate(
-                            recommendation = AiRecommendedTrack(
-                                track = matchedTrack,
-                                reason = suggestion.reason,
-                            ),
-                            bucket = suggestion.bucket,
+                            RadioResolvedCandidate(
+                                recommendation = AiRecommendedTrack(
+                                    track = matchedTrack,
+                                    reason = suggestion.reason,
+                                ),
+                                bucket = suggestion.bucket,
+                            )
+                        }
+                    }.awaitAll().filterNotNull()
+                }.filterNot { candidate ->
+                    candidate.recommendation.track.isLocallyExcluded(request)
+                }
+
+                val unresolvedTracks = matchedCandidates
+                    .map { it.recommendation.track }
+                    .filter { it.audioUrl.isBlank() }
+                val resolvedPlayableById = trackLookup.resolvePlayableTracks(unresolvedTracks)
+                    .associateBy { it.id }
+
+                val playable = matchedCandidates.mapNotNull { candidate ->
+                    val finalTrack = resolvedPlayableById[candidate.recommendation.track.id]
+                        ?: candidate.recommendation.track
+                    if (finalTrack.audioUrl.isBlank()) {
+                        null
+                    } else {
+                        candidate.copy(
+                            recommendation = candidate.recommendation.copy(track = finalTrack),
                         )
                     }
-                }.awaitAll().filterNotNull()
-            }.filterNot { candidate ->
-                candidate.recommendation.track.isLocallyExcluded(request)
-            }
-
-            val unresolvedTracks = matchedCandidates
-                .map { it.recommendation.track }
-                .filter { it.audioUrl.isBlank() }
-            val resolvedPlayableById = trackLookup.resolvePlayableTracks(unresolvedTracks)
-                .associateBy { it.id }
-
-            val playable = matchedCandidates.mapNotNull { candidate ->
-                val finalTrack = resolvedPlayableById[candidate.recommendation.track.id]
-                    ?: candidate.recommendation.track
-                if (finalTrack.audioUrl.isBlank()) {
-                    null
-                } else {
-                    candidate.copy(
-                        recommendation = candidate.recommendation.copy(track = finalTrack),
-                    )
                 }
-            }
 
-            val newlyAppended = composer.compose(
-                existingQueue = workingSession.queuedRecommendations + appended.map { it.recommendation },
-                candidates = playable,
-                boundaryState = workingSession.boundaryState,
-            )
+                composer.compose(
+                    existingQueue = existingQueue,
+                    candidates = playable,
+                    boundaryState = workingSession.boundaryState,
+                )
+            }
             appended = appended + newlyAppended
 
             if (appended.size >= minimumRequiredAppend) {
@@ -151,6 +161,49 @@ class RadioReplenishmentEngine(
             .orEmpty()
             .trim()
             .lowercase()
+    }
+
+    private suspend fun resolveFastStartCandidates(
+        suggestions: List<AiSuggestedTrack>,
+        request: RadioRecommendationRequest,
+        existingQueue: List<AiRecommendedTrack>,
+        boundaryState: RadioBoundaryState,
+    ): List<RadioResolvedCandidate> {
+        for (suggestion in suggestions) {
+            val matchedTrack = trackLookup.findBestMatchTrack(
+                title = suggestion.title,
+                artist = suggestion.artist,
+            ) ?: continue
+
+            val candidate = RadioResolvedCandidate(
+                recommendation = AiRecommendedTrack(
+                    track = matchedTrack,
+                    reason = suggestion.reason,
+                ),
+                bucket = suggestion.bucket,
+            )
+            if (candidate.recommendation.track.isLocallyExcluded(request)) continue
+
+            val finalTrack = if (matchedTrack.audioUrl.isBlank()) {
+                trackLookup.resolvePlayableTracks(listOf(matchedTrack)).firstOrNull() ?: matchedTrack
+            } else {
+                matchedTrack
+            }
+            if (finalTrack.audioUrl.isBlank()) continue
+
+            val appended = composer.compose(
+                existingQueue = existingQueue,
+                candidates = listOf(
+                    candidate.copy(
+                        recommendation = candidate.recommendation.copy(track = finalTrack),
+                    ),
+                ),
+                boundaryState = boundaryState,
+            )
+            if (appended.isNotEmpty()) return appended
+        }
+
+        return emptyList()
     }
 
     companion object {
