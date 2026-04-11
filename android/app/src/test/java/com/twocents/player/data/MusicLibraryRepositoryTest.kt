@@ -73,6 +73,51 @@ class MusicLibraryRepositoryTest {
     }
 
     @Test
+    fun resolvePlayableTracks_fallsBackToAlternateSourceWhenPrimarySourceCannotResolve() {
+        val targetTrack = track(
+            source = TrackSource.NETEASE,
+            sourceId = "1",
+            title = "晴天",
+            artist = "周杰伦",
+        )
+        val alternateTrack = track(
+            source = TrackSource.KUWO,
+            sourceId = "9",
+            title = "晴天",
+            artist = "周杰伦",
+        )
+        val netease = FakeMusicSourceRepository(
+            source = TrackSource.NETEASE,
+        )
+        val kuwo = FakeMusicSourceRepository(
+            source = TrackSource.KUWO,
+            resolveMap = mapOf("9" to "https://kuwo.example/9.mp3"),
+            bestMatch = alternateTrack,
+        )
+        val repository = MusicLibraryRepository(
+            neteaseRepository = netease,
+            kuwoRepository = kuwo,
+        )
+
+        val result = runBlocking {
+            repository.resolvePlayableTracks(listOf(targetTrack))
+        }
+
+        assertEquals(
+            listOf("https://kuwo.example/9.mp3"),
+            result.map { it.audioUrl },
+        )
+        assertEquals(
+            listOf("netease:1"),
+            result.map { it.id },
+        )
+        assertEquals(
+            listOf(TrackSource.NETEASE),
+            result.map { it.source },
+        )
+    }
+
+    @Test
     fun fetchLyrics_fallsBackToAlternateSourceWhenPrimarySourceReturnsBlank() {
         val neteaseTrack = track(source = TrackSource.NETEASE, sourceId = "1", title = "晴天", artist = "周杰伦")
         val kuwoMatch = track(source = TrackSource.KUWO, sourceId = "9", title = "晴天", artist = "周杰伦")
@@ -108,11 +153,50 @@ class MusicLibraryRepositoryTest {
         assertNull(lyrics)
     }
 
+    @Test
+    fun resolveTrackMetadata_fallsBackToAlternateSourceWhenPrimaryTrackLacksArtwork() {
+        val neteaseTrack = track(
+            source = TrackSource.NETEASE,
+            sourceId = "1",
+            title = "晴天",
+            artist = "周杰伦",
+        )
+        val kuwoMatch = track(
+            source = TrackSource.KUWO,
+            sourceId = "9",
+            title = "晴天",
+            artist = "周杰伦",
+            album = "叶惠美",
+            coverUrl = "https://kuwo.example/9.jpg",
+        )
+        val repository = MusicLibraryRepository(
+            neteaseRepository = FakeMusicSourceRepository(
+                source = TrackSource.NETEASE,
+                bestMatch = neteaseTrack,
+            ),
+            kuwoRepository = FakeMusicSourceRepository(
+                source = TrackSource.KUWO,
+                bestMatch = kuwoMatch,
+            ),
+        )
+
+        val result = runBlocking {
+            repository.resolveTrackMetadata(neteaseTrack)
+        }
+
+        assertEquals("https://kuwo.example/9.jpg", result.coverUrl)
+        assertEquals("叶惠美", result.album)
+        assertEquals("netease:1", result.id)
+        assertEquals(TrackSource.NETEASE, result.source)
+    }
+
     private fun track(
         source: TrackSource,
         sourceId: String,
         title: String = "歌曲",
         artist: String = "歌手",
+        album: String = "",
+        coverUrl: String = "",
     ): Track {
         return Track(
             id = "${source.storageKey}:$sourceId",
@@ -120,6 +204,8 @@ class MusicLibraryRepositoryTest {
             sourceId = sourceId,
             title = title,
             artist = artist,
+            album = album,
+            coverUrl = coverUrl,
         )
     }
 

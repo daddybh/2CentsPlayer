@@ -20,14 +20,26 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PlayerViewModelTest {
+    @Before
+    fun setUpMainDispatcher() {
+        Dispatchers.setMain(StandardTestDispatcher())
+    }
+
+    @After
+    fun tearDownMainDispatcher() {
+        Dispatchers.resetMain()
+    }
+
     @Test
     fun toggleHeartMode_whenRadioActive_unwindsToSingleTrackRegularQueue() {
         val application = FakeApplication()
@@ -102,48 +114,107 @@ class PlayerViewModelTest {
     @Test
     fun prepareTrackForPlayback_resolvesCurrentTrackBeforeRemainingQueue() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-        try {
-            val application = FakeApplication()
-            val viewModel = PlayerViewModel(application)
-            val neteaseSource = RecordingMusicSourceRepository(source = TrackSource.NETEASE)
-            viewModel.setPrivateField(
-                "musicLibraryRepository",
-                MusicLibraryRepository(
-                    neteaseRepository = neteaseSource,
-                    kuwoRepository = RecordingMusicSourceRepository(source = TrackSource.KUWO),
-                ),
-            )
-            val queue = listOf(
-                unresolvedTrack(id = "start"),
-                unresolvedTrack(id = "next-1"),
-                unresolvedTrack(id = "next-2"),
-            )
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val neteaseSource = RecordingMusicSourceRepository(source = TrackSource.NETEASE)
+        viewModel.setPrivateField(
+            "musicLibraryRepository",
+            MusicLibraryRepository(
+                neteaseRepository = neteaseSource,
+                kuwoRepository = RecordingMusicSourceRepository(source = TrackSource.KUWO),
+            ),
+        )
+        val queue = listOf(
+            unresolvedTrack(id = "start").copy(
+                album = "Album start",
+                coverUrl = "https://cover.example/start.jpg",
+            ),
+            unresolvedTrack(id = "next-1").copy(
+                album = "Album next-1",
+                coverUrl = "https://cover.example/next-1.jpg",
+            ),
+            unresolvedTrack(id = "next-2").copy(
+                album = "Album next-2",
+                coverUrl = "https://cover.example/next-2.jpg",
+            ),
+        )
 
-            viewModel.invokePrepareTrackForPlayback(
-                queue = queue,
-                index = 0,
-                playWhenReady = true,
-                startPositionMs = 0L,
-                sourceName = "REGULAR",
-            )
+        viewModel.invokePrepareTrackForPlayback(
+            queue = queue,
+            index = 0,
+            playWhenReady = true,
+            startPositionMs = 0L,
+            sourceName = "REGULAR",
+        )
+        advanceUntilIdle()
+        var attempts = 0
+        while (neteaseSource.resolveCalls.size < 2 && attempts < 50) {
             advanceUntilIdle()
-            var attempts = 0
-            while (neteaseSource.resolveCalls.size < 2 && attempts < 50) {
-                advanceUntilIdle()
-                Thread.sleep(20L)
-                attempts += 1
-            }
-
-            assertEquals(
-                listOf(
-                    listOf("netease:start"),
-                    listOf("netease:next-1", "netease:next-2"),
-                ),
-                neteaseSource.resolveCalls,
-            )
-        } finally {
-            Dispatchers.resetMain()
+            Thread.sleep(20L)
+            attempts += 1
         }
+
+        assertEquals(
+            listOf(
+                listOf("netease:start"),
+                listOf("netease:next-1", "netease:next-2"),
+            ),
+            neteaseSource.resolveCalls,
+        )
+    }
+
+    @Test
+    fun prepareTrackForPlayback_enrichesCurrentTrackArtworkFromAlternateSourceMetadata() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val targetTrack = Track(
+            id = "netease:art",
+            source = TrackSource.NETEASE,
+            sourceId = "art",
+            title = "Title art",
+            artist = "Artist art",
+            durationMs = 180_000L,
+            audioUrl = "https://audio.example/art.mp3",
+        )
+        val kuwoMatch = Track(
+            id = "kuwo:art-alt",
+            source = TrackSource.KUWO,
+            sourceId = "art-alt",
+            title = "Title art",
+            artist = "Artist art",
+            album = "Artwork Album",
+            coverUrl = "https://cover.example/art.jpg",
+        )
+        viewModel.setPrivateField(
+            "musicLibraryRepository",
+            MusicLibraryRepository(
+                neteaseRepository = RecordingMusicSourceRepository(source = TrackSource.NETEASE),
+                kuwoRepository = RecordingMusicSourceRepository(
+                    source = TrackSource.KUWO,
+                    bestMatch = kuwoMatch,
+                ),
+            ),
+        )
+
+        viewModel.invokePrepareTrackForPlayback(
+            queue = listOf(targetTrack),
+            index = 0,
+            playWhenReady = true,
+            startPositionMs = 0L,
+            sourceName = "REGULAR",
+        )
+        advanceUntilIdle()
+        var attempts = 0
+        while (viewModel.playbackState.currentTrack?.coverUrl.isNullOrBlank() && attempts < 50) {
+            advanceUntilIdle()
+            Thread.sleep(20L)
+            attempts += 1
+        }
+
+        assertEquals("https://cover.example/art.jpg", viewModel.playbackState.currentTrack?.coverUrl)
+        assertEquals("Artwork Album", viewModel.playbackState.currentTrack?.album)
+        assertEquals("https://cover.example/art.jpg", viewModel.playbackState.playlist.single().coverUrl)
     }
 
     private fun radioSession(queue: List<Track>): RadioSessionState {
@@ -257,6 +328,7 @@ class PlayerViewModelTest {
 
     private class RecordingMusicSourceRepository(
         override val source: TrackSource,
+        private val bestMatch: Track? = null,
     ) : MusicSourceRepository {
         val resolveCalls = mutableListOf<List<String>>()
 
@@ -269,7 +341,7 @@ class PlayerViewModelTest {
         override fun findBestMatchTrack(
             title: String,
             artist: String,
-        ): Track? = null
+        ): Track? = bestMatch
 
         override fun fetchLyrics(track: Track): String? = null
 
