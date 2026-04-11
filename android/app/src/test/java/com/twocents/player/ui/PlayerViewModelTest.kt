@@ -217,6 +217,97 @@ class PlayerViewModelTest {
         assertEquals("https://cover.example/art.jpg", viewModel.playbackState.playlist.single().coverUrl)
     }
 
+    @Test
+    fun openSearch_setsSearchPageVisible() {
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+
+        assertFalse(viewModel.isSearchPageVisible)
+
+        viewModel.openSearch()
+
+        assertTrue(viewModel.isSearchPageVisible)
+    }
+
+    @Test
+    fun openSearch_keepsExistingSearchQueryAndResults() {
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val existingResults = listOf(
+            track(id = "existing-1", title = "Existing 1"),
+            track(id = "existing-2", title = "Existing 2"),
+        )
+        viewModel.setPrivateSearchState(
+            viewModel.searchState.copy(
+                query = "existing query",
+                activeQuery = "existing query",
+                results = existingResults,
+                hasSearched = true,
+            ),
+        )
+        val existingState = viewModel.searchState
+
+        viewModel.openSearch()
+
+        assertEquals(existingState, viewModel.searchState)
+        assertTrue(viewModel.isSearchPageVisible)
+    }
+
+    @Test
+    fun closeSearch_hidesSearchPage() {
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+
+        viewModel.openSearch()
+        assertTrue(viewModel.isSearchPageVisible)
+
+        viewModel.closeSearch()
+
+        assertFalse(viewModel.isSearchPageVisible)
+    }
+
+    @Test
+    fun selectTrack_closesSearchPageAfterQueueingPlayback() {
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val track = track(id = "search-track", title = "Search Track")
+
+        viewModel.openSearch()
+        assertTrue(viewModel.isSearchPageVisible)
+
+        viewModel.selectTrack(track)
+
+        assertFalse(viewModel.isSearchPageVisible)
+        assertEquals(track.id, viewModel.playbackState.currentTrack?.id)
+    }
+
+    @Test
+    fun selectTrack_keepsSearchDataButReturnsToHomeLayer() {
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val results = listOf(
+            track(id = "search-1", title = "Search 1"),
+            track(id = "search-2", title = "Search 2"),
+        )
+        viewModel.setPrivateSearchState(
+            viewModel.searchState.copy(
+                query = "search query",
+                activeQuery = "search query",
+                results = results,
+                hasSearched = true,
+            ),
+        )
+        viewModel.openSearch()
+
+        viewModel.selectTrack(results.first())
+
+        assertFalse(viewModel.isSearchPageVisible)
+        assertEquals("search query", viewModel.searchState.query)
+        assertEquals("search query", viewModel.searchState.activeQuery)
+        assertEquals(results.map { it.id }, viewModel.searchState.results.map { it.id })
+        assertEquals(results.first().id, viewModel.playbackState.currentTrack?.id)
+    }
+
     private fun radioSession(queue: List<Track>): RadioSessionState {
         return RadioSessionState(
             sessionId = 1L,
@@ -282,6 +373,12 @@ class PlayerViewModelTest {
         field.set(this, value)
     }
 
+    private fun PlayerViewModel.setPrivateSearchState(state: SearchUiState) {
+        val method = PlayerViewModel::class.java.getDeclaredMethod("setSearchState", SearchUiState::class.java)
+        method.isAccessible = true
+        method.invoke(this, state)
+    }
+
     private fun PlayerViewModel.getPrivateField(name: String): Any? {
         val field = PlayerViewModel::class.java.getDeclaredField(name)
         field.isAccessible = true
@@ -329,6 +426,7 @@ class PlayerViewModelTest {
     private class RecordingMusicSourceRepository(
         override val source: TrackSource,
         private val bestMatch: Track? = null,
+        private val searchResults: List<Track> = emptyList(),
     ) : MusicSourceRepository {
         val resolveCalls = mutableListOf<List<String>>()
 
@@ -336,7 +434,7 @@ class PlayerViewModelTest {
             keyword: String,
             limit: Int,
             offset: Int,
-        ): List<Track> = emptyList()
+        ): List<Track> = searchResults.drop(offset).take(limit)
 
         override fun findBestMatchTrack(
             title: String,

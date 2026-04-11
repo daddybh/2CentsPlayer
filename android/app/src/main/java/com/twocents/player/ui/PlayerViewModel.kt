@@ -117,6 +117,9 @@ class PlayerViewModel(
     var searchState by mutableStateOf(SearchUiState())
         private set
 
+    var isSearchPageVisible by mutableStateOf(false)
+        private set
+
     var favoritesState by mutableStateOf(FavoritesUiState(tracks = initialFavorites))
         private set
 
@@ -260,18 +263,18 @@ class PlayerViewModel(
         favoritesState = favoritesState.copy(isVisible = false)
         lyricsState = lyricsState.copy(isVisible = false)
         aiSettingsState = aiSettingsState.copy(isVisible = false)
-        searchState = searchState.copy(isVisible = true)
+        isSearchPageVisible = true
     }
 
     fun closeSearch() {
-        searchState = searchState.copy(isVisible = false)
+        isSearchPageVisible = false
     }
 
     fun openFavorites() {
-        searchState = searchState.copy(isVisible = false)
         lyricsState = lyricsState.copy(isVisible = false)
         aiSettingsState = aiSettingsState.copy(isVisible = false)
         favoritesState = favoritesState.copy(isVisible = true)
+        isSearchPageVisible = false
     }
 
     fun closeFavorites() {
@@ -282,6 +285,7 @@ class PlayerViewModel(
         aiSettingsState = aiSettingsState.copy(isVisible = false)
         lyricsState = lyricsState.copy(isVisible = true)
         loadLyricsForCurrentTrack()
+        isSearchPageVisible = false
     }
 
     fun closeLyricsScreen() {
@@ -289,10 +293,10 @@ class PlayerViewModel(
     }
 
     fun openAiSettings() {
-        searchState = searchState.copy(isVisible = false)
         favoritesState = favoritesState.copy(isVisible = false)
         lyricsState = lyricsState.copy(isVisible = false)
         loadStoredAiSettings(isVisible = true)
+        isSearchPageVisible = false
     }
 
     fun closeAiSettings() {

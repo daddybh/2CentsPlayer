@@ -2,7 +2,13 @@ package com.twocents.player.ui
 
 import android.animation.ValueAnimator
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -137,6 +143,7 @@ fun PlayerApp(
     val lyricsState = viewModel.lyricsState
     val aiSettingsState = viewModel.aiSettingsState
     val aiRecommendationState = viewModel.aiRecommendationState
+    val isSearchPageVisible = viewModel.isSearchPageVisible
     val currentTrack = playbackState.currentTrack
     val orderedQueue = remember(playbackState.playlist, playbackState.currentIndex) {
         buildOrderedQueue(
@@ -236,29 +243,17 @@ fun PlayerApp(
         }
     }
 
-    if (searchState.isVisible) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(
-            onDismissRequest = viewModel::closeSearch,
-            sheetState = sheetState,
-            containerColor = SurfacePrimary,
-            contentColor = TextPrimary,
-            dragHandle = {
-                BottomSheetDefaults.DragHandle(color = TextTertiary)
-            },
-        ) {
-            SearchSheet(
-                state = searchState,
-                currentTrackId = currentTrack?.id,
-                onQueryChange = viewModel::updateSearchQuery,
-                onSearch = viewModel::searchTracks,
-                onLoadMore = viewModel::loadMoreSearchTracks,
-                onClose = viewModel::closeSearch,
-                onSelectTrack = viewModel::selectTrack,
-                onToggleFavorite = viewModel::toggleFavorite,
-            )
-        }
-    }
+    SearchPageLayer(
+        isVisible = isSearchPageVisible,
+        state = searchState,
+        currentTrackId = currentTrack?.id,
+        onQueryChange = viewModel::updateSearchQuery,
+        onSearch = viewModel::searchTracks,
+        onLoadMore = viewModel::loadMoreSearchTracks,
+        onNavigateBack = viewModel::closeSearch,
+        onSelectTrack = viewModel::selectTrack,
+        onToggleFavorite = viewModel::toggleFavorite,
+    )
 
     if (favoritesState.isVisible) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -294,6 +289,59 @@ fun PlayerApp(
             onSkipPrevious = viewModel::skipPrevious,
             onToggleFavorite = viewModel::toggleFavorite,
         )
+    }
+}
+
+@Composable
+private fun SearchPageLayer(
+    isVisible: Boolean,
+    state: SearchUiState,
+    currentTrackId: String?,
+    onQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onLoadMore: () -> Unit,
+    onNavigateBack: () -> Unit,
+    onSelectTrack: (Track) -> Unit,
+    onToggleFavorite: (Track) -> Unit,
+) {
+    AnimatedVisibility(
+        visible = isVisible,
+        enter = slideInHorizontally(
+            animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+            initialOffsetX = { fullWidth -> fullWidth },
+        ) + fadeIn(animationSpec = tween(durationMillis = 220)),
+        exit = slideOutHorizontally(
+            animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
+            targetOffsetX = { fullWidth -> fullWidth },
+        ) + fadeOut(animationSpec = tween(durationMillis = 180)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            MidnightBackground,
+                            SurfacePrimary,
+                            MidnightBackground,
+                        ),
+                    ),
+                ),
+        ) {
+            SearchPage(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding(),
+                state = state,
+                currentTrackId = currentTrackId,
+                onQueryChange = onQueryChange,
+                onSearch = onSearch,
+                onLoadMore = onLoadMore,
+                onNavigateBack = onNavigateBack,
+                onSelectTrack = onSelectTrack,
+                onToggleFavorite = onToggleFavorite,
+            )
+        }
     }
 }
 
@@ -1745,424 +1793,6 @@ private fun AiSettingsSheet(
         )
 
         Spacer(modifier = Modifier.height(6.dp))
-    }
-}
-
-@Composable
-private fun SearchSheet(
-    state: SearchUiState,
-    currentTrackId: String?,
-    onQueryChange: (String) -> Unit,
-    onSearch: () -> Unit,
-    onLoadMore: () -> Unit,
-    onClose: () -> Unit,
-    onSelectTrack: (Track) -> Unit,
-    onToggleFavorite: (Track) -> Unit,
-) {
-    val canPaginateCurrentQuery = state.activeQuery.isNotBlank() && state.activeQuery == state.query.trim()
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "搜索歌曲",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = TextPrimary,
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "网易云和酷我会混排展示，并在结果里标注来源。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextTertiary,
-                )
-            }
-
-            IconButton(onClick = onClose) {
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = "关闭搜索",
-                    tint = TextSecondary,
-                )
-            }
-        }
-
-        OutlinedTextField(
-            value = state.query,
-            onValueChange = onQueryChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = {
-                Text("输入歌名 / 歌手 / 专辑")
-            },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { onSearch() }),
-            trailingIcon = {
-                IconButton(
-                    onClick = onSearch,
-                    enabled = state.query.isNotBlank() && !state.isLoading,
-                ) {
-                    if (state.isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = AccentMint,
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "执行搜索",
-                        )
-                    }
-                }
-            },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = AccentMint,
-                unfocusedBorderColor = TextMuted.copy(alpha = 0.65f),
-                focusedLabelColor = AccentMint,
-                unfocusedLabelColor = TextTertiary,
-                cursorColor = AccentMint,
-                focusedTextColor = TextPrimary,
-                unfocusedTextColor = TextPrimary,
-                focusedContainerColor = SurfaceSecondary.copy(alpha = 0.64f),
-                unfocusedContainerColor = SurfaceSecondary.copy(alpha = 0.38f),
-                focusedTrailingIconColor = AccentMint,
-                unfocusedTrailingIconColor = TextSecondary,
-            ),
-        )
-
-        when {
-            state.errorMessage != null -> {
-                SearchHintCard(
-                    title = "搜索失败",
-                    body = state.errorMessage,
-                )
-            }
-
-            state.isLoading && state.results.isEmpty() -> {
-                SearchHintCard(
-                    title = "正在搜索",
-                    body = "稍等一下，正在聚合网易云和酷我的结果。",
-                )
-            }
-
-            state.hasSearched && state.results.isEmpty() -> {
-                SearchHintCard(
-                    title = "没有找到结果",
-                    body = "换个关键词试试，比如完整歌名、歌手名或专辑名。",
-                )
-            }
-
-            state.results.isNotEmpty() -> {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(state.results, key = { it.id }) { result ->
-                        SearchResultCard(
-                            track = result,
-                            isCurrentTrack = result.id == currentTrackId,
-                            onClick = { onSelectTrack(result) },
-                            onToggleFavorite = { onToggleFavorite(result) },
-                        )
-                    }
-
-                    if (
-                        state.isLoadingMore ||
-                        state.loadMoreErrorMessage != null ||
-                        canPaginateCurrentQuery
-                    ) {
-                        item(key = "search-pagination-footer") {
-                            SearchPaginationFooter(
-                                isLoadingMore = state.isLoadingMore,
-                                loadMoreErrorMessage = state.loadMoreErrorMessage,
-                                canLoadMore = canPaginateCurrentQuery && state.canLoadMore,
-                                onRetry = onLoadMore,
-                            )
-
-                            if (
-                                canPaginateCurrentQuery &&
-                                state.canLoadMore &&
-                                !state.isLoadingMore &&
-                                state.loadMoreErrorMessage == null
-                            ) {
-                                LaunchedEffect(state.nextOffset) {
-                                    onLoadMore()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            else -> {
-                SearchHintCard(
-                    title = "开始搜索",
-                    body = "输入关键词后会混合展示网易云和酷我结果，并直接加入当前播放器上下文。",
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-    }
-}
-
-@Composable
-private fun SearchPaginationFooter(
-    isLoadingMore: Boolean,
-    loadMoreErrorMessage: String?,
-    canLoadMore: Boolean,
-    onRetry: () -> Unit,
-) {
-    when {
-        isLoadingMore -> {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                color = SurfaceSecondary.copy(alpha = 0.52f),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = AccentMint,
-                    )
-                    Text(
-                        text = "正在加载更多结果…",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary,
-                    )
-                }
-            }
-        }
-
-        loadMoreErrorMessage != null -> {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                color = SurfaceSecondary.copy(alpha = 0.52f),
-                border = BorderStroke(1.dp, AccentCoral.copy(alpha = 0.32f)),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(onClick = onRetry)
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        text = "加载更多失败，点按重试",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = TextPrimary,
-                    )
-                    Text(
-                        text = loadMoreErrorMessage,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextTertiary,
-                    )
-                }
-            }
-        }
-
-        canLoadMore -> {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                color = SurfaceSecondary.copy(alpha = 0.40f),
-            ) {
-                Text(
-                    text = "继续滚动，自动加载更多",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextTertiary,
-                )
-            }
-        }
-
-        else -> {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                color = SurfaceSecondary.copy(alpha = 0.40f),
-            ) {
-                Text(
-                    text = "已经到底了，没有更多结果。",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextTertiary,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SearchHintCard(
-    title: String,
-    body: String,
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        color = SurfaceSecondary.copy(alpha = 0.72f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.06f)),
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary,
-            )
-            Text(
-                text = body,
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary,
-            )
-        }
-    }
-}
-
-@Composable
-private fun SearchResultCard(
-    track: Track,
-    isCurrentTrack: Boolean,
-    onClick: () -> Unit,
-    onToggleFavorite: () -> Unit,
-) {
-    val shape = RoundedCornerShape(24.dp)
-    val backgroundBrush = if (isCurrentTrack) {
-        Brush.linearGradient(
-            colors = listOf(
-                AccentMint.copy(alpha = 0.20f),
-                AccentSky.copy(alpha = 0.10f),
-            ),
-        )
-    } else {
-        Brush.linearGradient(
-            colors = listOf(
-                SurfaceSecondary.copy(alpha = 0.84f),
-                SurfacePrimary.copy(alpha = 0.92f),
-            ),
-        )
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(backgroundBrush)
-            .border(
-                width = 1.dp,
-                color = if (isCurrentTrack) AccentMint.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.06f),
-                shape = shape,
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 18.dp, vertical = 16.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TrackArtwork(
-                coverUrl = track.coverUrl,
-                modifier = Modifier.size(56.dp),
-                cornerRadius = 18.dp,
-                fallbackTint = MidnightBackground,
-            )
-
-            Spacer(modifier = Modifier.width(14.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = track.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = track.artist,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (track.album.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = track.album,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextTertiary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Surface(
-                    shape = RoundedCornerShape(999.dp),
-                    color = Color.Black.copy(alpha = 0.16f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
-                ) {
-                    Text(
-                        text = track.source.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isCurrentTrack) AccentMint else TextSecondary,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Surface(
-                    modifier = Modifier.size(36.dp),
-                    shape = CircleShape,
-                    color = Color.Black.copy(alpha = 0.18f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clickable(onClick = onToggleFavorite),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = if (track.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = if (track.isFavorite) "取消收藏" else "加入收藏",
-                            tint = if (track.isFavorite) FavoriteRed else TextSecondary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                }
-                Text(
-                    text = formatTime(track.durationMs),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (isCurrentTrack) AccentMint else TextTertiary,
-                )
-            }
-        }
     }
 }
 
