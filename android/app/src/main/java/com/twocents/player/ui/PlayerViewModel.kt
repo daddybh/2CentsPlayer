@@ -96,6 +96,7 @@ class PlayerViewModel(
     private var latestPlaybackRequestId = 0L
     private var latestPlayerCommandId = 0L
     private var latestLyricsRequestId = 0L
+    private var latestTrackMetadataRequestId = 0L
     private var latestAiSessionId = 0L
 
     private var activePlaybackSource = PlaybackSource.REGULAR
@@ -979,6 +980,7 @@ class PlayerViewModel(
         if (lyricsState.isVisible) {
             loadLyricsForTrack(currentTrack)
         }
+        enrichTrackMetadataForPlayback(currentTrack)
         emitPlayerCommand(
             PlayerCommand.LoadTrack(
                 id = nextPlayerCommandId(),
@@ -988,6 +990,54 @@ class PlayerViewModel(
                 startPositionMs = startPositionMs,
             ),
         )
+    }
+
+    private fun enrichTrackMetadataForPlayback(track: Track) {
+        val normalizedTrack = normalizeTrack(track)
+        if (!needsTrackMetadataEnrichment(normalizedTrack)) return
+
+        val requestId = ++latestTrackMetadataRequestId
+        runCatching {
+            viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    musicLibraryRepository.resolveTrackMetadata(normalizedTrack)
+                }
+            }.onSuccess { resolvedTrack ->
+                if (requestId != latestTrackMetadataRequestId) return@onSuccess
+
+                val currentTrack = playbackState.currentTrack ?: return@onSuccess
+                if (currentTrack.id != normalizedTrack.id) return@onSuccess
+
+                val mergedTrack = normalizeTrack(
+                    currentTrack.copy(
+                        album = currentTrack.album.ifBlank { resolvedTrack.album },
+                        coverUrl = currentTrack.coverUrl.ifBlank { resolvedTrack.coverUrl },
+                        durationMs = currentTrack.durationMs.takeIf { it > 0L } ?: resolvedTrack.durationMs,
+                    ),
+                )
+                if (mergedTrack == currentTrack) return@onSuccess
+
+                val updatedPlaylist = playbackState.playlist.toMutableList().also { playlist ->
+                    val currentIndex = playbackState.currentIndex
+                    if (currentIndex in playlist.indices && playlist[currentIndex].id == currentTrack.id) {
+                        playlist[currentIndex] = mergedTrack
+                    }
+                }
+
+                playbackState = playbackState.copy(
+                    currentTrack = mergedTrack,
+                    playlist = updatedPlaylist,
+                )
+            }
+            }
+        }.getOrElse {
+            return
+        }
+    }
+
+    private fun needsTrackMetadataEnrichment(track: Track): Boolean {
+        return track.coverUrl.isBlank() || track.album.isBlank() || track.durationMs <= 0L
     }
 
     private fun queueMoreAiRecommendations(

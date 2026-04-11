@@ -89,6 +89,34 @@ class MusicLibraryRepository(
         return null
     }
 
+    suspend fun resolveTrackMetadata(track: Track): Track = coroutineScope {
+        val normalizedTrack = track.withCanonicalIdentity()
+        if (!needsMetadataFallback(normalizedTrack)) return@coroutineScope normalizedTrack
+
+        val preferredDeferred = async(Dispatchers.IO) {
+            resolveMetadataMatch(repositoryFor(normalizedTrack.source), normalizedTrack)
+        }
+        val alternateDeferreds = repositoryForAlternateSources(normalizedTrack.source).map { repository ->
+            async(Dispatchers.IO) {
+                resolveMetadataMatch(repository, normalizedTrack)
+            }
+        }
+
+        var bestTrack = normalizedTrack
+        listOfNotNull(preferredDeferred.await(), *alternateDeferreds.awaitAll().filterNotNull().toTypedArray())
+            .forEach { candidate ->
+                val mergedTrack = mergeTrackMetadata(
+                    originalTrack = normalizedTrack,
+                    resolvedTrack = candidate,
+                )
+                if (metadataCompletenessScore(mergedTrack) > metadataCompletenessScore(bestTrack)) {
+                    bestTrack = mergedTrack
+                }
+            }
+
+        bestTrack
+    }
+
     override suspend fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
         if (tracks.isEmpty()) return emptyList()
 
@@ -112,7 +140,92 @@ class MusicLibraryRepository(
             }
         }
 
-        return normalizedTracks.map { track -> resolvedById[track.id] ?: track }
+        val fallbackResolvedById = coroutineScope {
+            normalizedTracks.mapNotNull { track ->
+                val resolvedTrack = resolvedById[track.id]
+                if (resolvedTrack?.audioUrl.isNullOrBlank() && track.audioUrl.isBlank()) {
+                    async(Dispatchers.IO) {
+                        resolvePlayableTrackFromAlternateSources(track)
+                    }
+                } else {
+                    null
+                }
+            }.awaitAll().filterNotNull().associateBy { it.id }
+        }
+
+        return normalizedTracks.map { track ->
+            val resolvedTrack = resolvedById[track.id]
+            when {
+                !resolvedTrack?.audioUrl.isNullOrBlank() -> resolvedTrack
+                !fallbackResolvedById[track.id]?.audioUrl.isNullOrBlank() -> fallbackResolvedById.getValue(track.id)
+                else -> resolvedTrack ?: track
+            }
+        }
+    }
+
+    private fun resolvePlayableTrackFromAlternateSources(track: Track): Track? {
+        repositoryForAlternateSources(track.source).forEach { repository ->
+            val matchedTrack = runCatching {
+                repository.findBestMatchTrack(
+                    title = track.title,
+                    artist = track.artist,
+                )
+            }.getOrNull() ?: return@forEach
+
+            val resolvedTrack = runCatching {
+                repository.resolvePlayableTracks(listOf(matchedTrack))
+                    .firstOrNull()
+                    ?.withCanonicalIdentity()
+            }.getOrNull() ?: return@forEach
+
+            if (resolvedTrack.audioUrl.isBlank()) return@forEach
+
+            return mergePlayableFallback(
+                originalTrack = track,
+                resolvedTrack = resolvedTrack,
+            )
+        }
+
+        return null
+    }
+
+    private fun resolveMetadataMatch(
+        repository: MusicSourceRepository,
+        track: Track,
+    ): Track? {
+        return runCatching {
+            repository.findBestMatchTrack(
+                title = track.title,
+                artist = track.artist,
+            )?.withCanonicalIdentity()
+        }.getOrNull()
+    }
+
+    private fun needsMetadataFallback(track: Track): Boolean {
+        return track.coverUrl.isBlank() || track.album.isBlank() || track.durationMs <= 0L
+    }
+
+    private fun mergePlayableFallback(
+        originalTrack: Track,
+        resolvedTrack: Track,
+    ): Track {
+        return mergeTrackMetadata(
+            originalTrack = originalTrack,
+            resolvedTrack = resolvedTrack,
+        ).copy(
+            audioUrl = resolvedTrack.audioUrl,
+        )
+    }
+
+    private fun mergeTrackMetadata(
+        originalTrack: Track,
+        resolvedTrack: Track,
+    ): Track {
+        return originalTrack.withCanonicalIdentity().copy(
+            durationMs = resolvedTrack.durationMs.takeIf { it > 0L } ?: originalTrack.durationMs,
+            album = originalTrack.album.ifBlank { resolvedTrack.album },
+            coverUrl = originalTrack.coverUrl.ifBlank { resolvedTrack.coverUrl },
+        )
     }
 
     private fun fetchLyricsFromPreferredSource(track: Track): String? {
