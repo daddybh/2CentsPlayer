@@ -39,9 +39,30 @@ data class AiSuggestedTrack(
     val artist: String,
     val reason: String = "",
     val bucket: RadioCandidateBucket = RadioCandidateBucket.SAFE,
+    val resolvedTrack: Track? = null,
 )
 
 data class AiRecommendedTrack(
     val track: Track,
     val reason: String = "",
+)
+
+data class SearchToolCall(
+    val query: String,
+    val limit: Int,
+)
+
+data class SearchToolCandidate(
+    val candidateId: String,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val source: String,
+    val durationMs: Long,
+)
+
+data class ToolSelectedTrack(
+    val candidateId: String,
+    val reason: String,
+    val bucket: RadioCandidateBucket,
 )

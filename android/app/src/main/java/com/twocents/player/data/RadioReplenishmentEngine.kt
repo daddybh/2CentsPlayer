@@ -64,7 +64,7 @@ class RadioReplenishmentEngine(
                 val matchedCandidates = coroutineScope {
                     suggestions.map { suggestion ->
                         async(Dispatchers.IO) {
-                            val matchedTrack = trackLookup.findBestMatchTrack(
+                            val matchedTrack = suggestion.resolvedTrack ?: trackLookup.findBestMatchTrack(
                                 title = suggestion.title,
                                 artist = suggestion.artist,
                             ) ?: return@async null
@@ -170,7 +170,7 @@ class RadioReplenishmentEngine(
         boundaryState: RadioBoundaryState,
     ): List<RadioResolvedCandidate> {
         for (suggestion in suggestions) {
-            val matchedTrack = trackLookup.findBestMatchTrack(
+            val matchedTrack = suggestion.resolvedTrack ?: trackLookup.findBestMatchTrack(
                 title = suggestion.title,
                 artist = suggestion.artist,
             ) ?: continue

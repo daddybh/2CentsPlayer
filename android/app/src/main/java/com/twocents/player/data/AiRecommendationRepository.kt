@@ -15,8 +15,13 @@ class AiRecommendationRepository(
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(35, TimeUnit.SECONDS)
         .build(),
+    private val searchTool: AiSearchTool = AiSearchTool { query, limit ->
+        MusicLibraryRepository().searchTracks(
+            keyword = query,
+            limitPerSource = limit,
+        )
+    },
 ) : RadioCandidateSource {
-
     fun requestRecommendations(
         settings: AiServiceConfig,
         favorites: List<Track>,
@@ -95,55 +100,56 @@ class AiRecommendationRepository(
             throw IOException("AI 配置不完整，请先填写接口地址、模型和 Access Key。")
         }
 
-        val requestBody = JSONObject()
-            .put("model", settings.model.trim())
-            .put("stream", false)
-            .put(
-                "messages",
-                JSONArray()
+        val firstResponse = requestChatCompletionResponse(
+            settings = settings,
+            messages = JSONArray()
+                .put(
+                    JSONObject()
+                        .put("role", "system")
+                        .put("content", buildRadioToolSystemPrompt(request)),
+                )
+                .put(
+                        JSONObject()
+                            .put("role", "user")
+                            .put("content", buildRadioToolUserPrompt(request)),
+                    ),
+            tools = buildSearchToolDefinitions(),
+            toolChoice = "required",
+        )
+        val firstContent = extractAssistantContent(firstResponse)
+
+        (parseSearchToolCallFromResponse(firstResponse) ?: parseSearchToolCall(firstContent))?.let { toolCall ->
+            val toolResult = runBlockingSearchTool(toolCall)
+            val secondContent = requestChatCompletion(
+                settings = settings,
+                messages = JSONArray()
                     .put(
                         JSONObject()
                             .put("role", "system")
-                            .put("content", buildRadioSystemPrompt(request)),
+                            .put("content", buildRadioSelectionSystemPrompt(request)),
                     )
                     .put(
                         JSONObject()
                             .put("role", "user")
-                            .put("content", buildRadioUserPrompt(request)),
+                            .put("content", buildRadioSelectionUserPrompt(request, toolResult.candidates)),
                     ),
             )
 
-        val networkRequest = Request.Builder()
-            .url(settings.chatCompletionsUrl())
-            .addHeader("Authorization", "Bearer ${settings.accessKey.trim()}")
-            .post(
-                requestBody
-                    .toString()
-                    .toByteArray(Charsets.UTF_8)
-                    .toRequestBody(JSON_MEDIA_TYPE.toMediaType()),
-            )
-            .build()
-
-        client.newCall(networkRequest).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                throw IOException(extractErrorMessage(body, response.code))
-            }
-            if (body.isBlank()) {
-                throw IOException("AI 接口返回了空响应。")
-            }
-
-            val root = runCatching { JSONObject(body) }.getOrElse {
-                throw IOException("AI 接口返回的内容不是合法 JSON。")
-            }
-
-            val content = extractAssistantContent(root)
-            if (content.isBlank()) {
-                throw IOException("AI 接口没有返回推荐内容。")
-            }
-
-            return parseRecommendations(content).take(request.rawCandidateLimit)
+            return parseToolSelectedTracks(secondContent)
+                .mapNotNull { selected ->
+                    val track = toolResult.trackByCandidateId[selected.candidateId] ?: return@mapNotNull null
+                    AiSuggestedTrack(
+                        title = track.title,
+                        artist = track.artist,
+                        reason = selected.reason,
+                        bucket = selected.bucket,
+                        resolvedTrack = track,
+                    )
+                }
+                .take(request.rawCandidateLimit)
         }
+
+        return parseRecommendations(firstContent).take(request.rawCandidateLimit)
     }
 
     private fun buildSystemPrompt(limit: Int): String = """
@@ -195,6 +201,18 @@ class AiRecommendationRepository(
         3. reason 必须是简短中文，一句即可。
     """.trimIndent()
 
+    private fun buildRadioToolSystemPrompt(request: RadioRecommendationRequest): String = """
+        你是一个探索电台候选生成助手。
+        目标桶位为 safe=${request.waveTargets.safeCount} adjacent=${request.waveTargets.adjacentCount} surprise=${request.waveTargets.surpriseCount}。
+        你这一步不能直接返回歌曲结果。
+        你必须先决定是否调用一次搜索工具 `search_tracks(query, limit)`。
+        本轮最多只能调用一次搜索工具。
+        如果调用工具，请只返回 JSON：
+        {"tool":"search_tracks","arguments":{"query":"搜索词","limit":${request.rawCandidateLimit}}}
+        如果你确信无需调用工具，也只能直接返回最终 recommendations JSON。
+        不要 Markdown，不要解释，不要代码块。
+    """.trimIndent()
+
     private fun buildRadioUserPrompt(request: RadioRecommendationRequest): String {
         val favoriteSeedLines = request.favoriteSeeds.toPromptLines(MAX_PROMPT_FAVORITES)
 
@@ -207,6 +225,68 @@ class AiRecommendationRepository(
             
             Negative track ids:
             ${request.negativeTrackIds.joinToString(", ").ifBlank { "none" }}
+            
+            Avoid track ids:
+            ${request.avoidTrackIds.joinToString(", ").ifBlank { "none" }}
+            
+            Avoid artist keys:
+            ${request.avoidArtistKeys.joinToString(", ").ifBlank { "none" }}
+        """.trimIndent()
+    }
+
+    private fun buildRadioToolUserPrompt(request: RadioRecommendationRequest): String {
+        val favoriteSeedLines = request.favoriteSeeds.toPromptLines(MAX_PROMPT_FAVORITES)
+        return """
+            请基于下面信息生成一次搜索工具调用，目标是找到高命中率、正式发行、主流可搜索的歌曲候选。
+            
+            Favorite seeds:
+            ${favoriteSeedLines.ifBlank { "none" }}
+            
+            Positive track ids:
+            ${request.positiveTrackIds.joinToString(", ").ifBlank { "none" }}
+            
+            Negative track ids:
+            ${request.negativeTrackIds.joinToString(", ").ifBlank { "none" }}
+            
+            Avoid track ids:
+            ${request.avoidTrackIds.joinToString(", ").ifBlank { "none" }}
+            
+            Avoid artist keys:
+            ${request.avoidArtistKeys.joinToString(", ").ifBlank { "none" }}
+        """.trimIndent()
+    }
+
+    private fun buildRadioSelectionSystemPrompt(request: RadioRecommendationRequest): String = """
+        你是一个探索电台候选选择助手。
+        现在你只能从候选集中选择结果，不能编造新歌，不能调用第二次工具。
+        目标桶位为 safe=${request.waveTargets.safeCount} adjacent=${request.waveTargets.adjacentCount} surprise=${request.waveTargets.surpriseCount}。
+        只返回 JSON：
+        {"recommendations":[{"candidateId":"cand_1","reason":"一句中文理由","bucket":"safe|adjacent|surprise"}]}
+        不要 Markdown，不要解释，不要代码块。
+    """.trimIndent()
+
+    private fun buildRadioSelectionUserPrompt(
+        request: RadioRecommendationRequest,
+        candidates: List<SearchToolCandidate>,
+    ): String {
+        val candidateLines = candidates.joinToString(separator = "\n") { candidate ->
+            buildString {
+                append(candidate.candidateId)
+                append(". ")
+                append(candidate.title)
+                append(" - ")
+                append(candidate.artist)
+                if (candidate.album.isNotBlank()) {
+                    append(" | 专辑: ")
+                    append(candidate.album)
+                }
+                append(" | 来源: ")
+                append(candidate.source)
+            }
+        }
+        return """
+            下面是搜索工具返回的真实候选，请只从中挑选：
+            $candidateLines
             
             Avoid track ids:
             ${request.avoidTrackIds.joinToString(", ").ifBlank { "none" }}
@@ -320,11 +400,201 @@ class AiRecommendationRepository(
         }
     }
 
+    internal fun parseRadioToolSelectionForTest(rawContent: String): List<ToolSelectedTrack> {
+        return parseToolSelectedTracks(rawContent)
+    }
+
+    private fun parseSearchToolCall(rawContent: String): SearchToolCall? {
+        val normalizedContent = rawContent
+            .trim()
+            .removePrefix("```json")
+            .removePrefix("```")
+            .removeSuffix("```")
+            .trim()
+
+        val payload = sequenceOf(
+            normalizedContent,
+            extractJsonObject(normalizedContent),
+        ).mapNotNull { candidate ->
+            candidate?.takeIf { it.isNotBlank() }?.let {
+                runCatching { JSONObject(it) }.getOrNull()
+            }
+        }.firstOrNull() ?: return null
+
+        if (payload.optString("tool").trim() != "search_tracks") return null
+        val args = payload.optJSONObject("arguments") ?: return null
+        val query = args.optString("query").trim()
+        if (query.isBlank()) return null
+        val limit = args.optInt("limit").takeIf { it > 0 } ?: 4
+        return SearchToolCall(
+            query = query,
+            limit = limit,
+        )
+    }
+
+    private fun parseSearchToolCallFromResponse(root: JSONObject): SearchToolCall? {
+        val choices = root.optJSONArray("choices") ?: return null
+        val message = choices.optJSONObject(0)?.optJSONObject("message") ?: return null
+        val toolCalls = message.optJSONArray("tool_calls") ?: return null
+        val toolCall = toolCalls.optJSONObject(0) ?: return null
+        val function = toolCall.optJSONObject("function") ?: return null
+        if (function.optString("name").trim() != "search_tracks") return null
+
+        val argsJson = runCatching { JSONObject(function.optString("arguments")) }.getOrNull() ?: return null
+        val query = argsJson.optString("query").trim()
+        if (query.isBlank()) return null
+        val limit = argsJson.optInt("limit").takeIf { it > 0 } ?: 4
+        return SearchToolCall(query = query, limit = limit)
+    }
+
+    private fun parseToolSelectedTracks(rawContent: String): List<ToolSelectedTrack> {
+        val normalizedContent = rawContent
+            .trim()
+            .removePrefix("```json")
+            .removePrefix("```")
+            .removeSuffix("```")
+            .trim()
+
+        val payload = sequenceOf(
+            normalizedContent,
+            extractJsonObject(normalizedContent),
+        ).mapNotNull { candidate ->
+            candidate?.takeIf { it.isNotBlank() }?.let {
+                runCatching { JSONObject(it) }.getOrNull()
+            }
+        }.firstOrNull() ?: throw IOException("AI 返回的工具选择内容不是可解析的 JSON。")
+
+        val items = payload.optJSONArray("recommendations")
+            ?: throw IOException("AI 返回缺少 recommendations 字段。")
+
+        return buildList(items.length()) {
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                val candidateId = item.optString("candidateId").trim()
+                val reason = item.optString("reason").trim()
+                val bucket = when (item.optString("bucket").trim().lowercase()) {
+                    "adjacent" -> RadioCandidateBucket.ADJACENT
+                    "surprise" -> RadioCandidateBucket.SURPRISE
+                    else -> RadioCandidateBucket.SAFE
+                }
+                if (candidateId.isBlank()) continue
+                add(
+                    ToolSelectedTrack(
+                        candidateId = candidateId,
+                        reason = reason,
+                        bucket = bucket,
+                    ),
+                )
+            }
+        }
+    }
+
     private fun extractJsonObject(content: String): String? {
         val startIndex = content.indexOf('{')
         val endIndex = content.lastIndexOf('}')
         if (startIndex == -1 || endIndex <= startIndex) return null
         return content.substring(startIndex, endIndex + 1)
+    }
+
+    private fun requestChatCompletion(
+        settings: AiServiceConfig,
+        messages: JSONArray,
+        tools: JSONArray? = null,
+        toolChoice: String? = null,
+    ): String {
+        val root = requestChatCompletionResponse(
+            settings = settings,
+            messages = messages,
+            tools = tools,
+            toolChoice = toolChoice,
+        )
+        return extractAssistantContent(root).ifBlank {
+            throw IOException("AI 接口没有返回推荐内容。")
+        }
+    }
+
+    private fun requestChatCompletionResponse(
+        settings: AiServiceConfig,
+        messages: JSONArray,
+        tools: JSONArray? = null,
+        toolChoice: String? = null,
+    ): JSONObject {
+        val requestBody = JSONObject()
+            .put("model", settings.model.trim())
+            .put("stream", false)
+            .put("messages", messages)
+        if (tools != null) requestBody.put("tools", tools)
+        if (toolChoice != null) requestBody.put("tool_choice", toolChoice)
+
+        val networkRequest = Request.Builder()
+            .url(settings.chatCompletionsUrl())
+            .addHeader("Authorization", "Bearer ${settings.accessKey.trim()}")
+            .post(
+                requestBody
+                    .toString()
+                    .toByteArray(Charsets.UTF_8)
+                    .toRequestBody(JSON_MEDIA_TYPE.toMediaType()),
+            )
+            .build()
+
+        client.newCall(networkRequest).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IOException(extractErrorMessage(body, response.code))
+            }
+            if (body.isBlank()) {
+                throw IOException("AI 接口返回了空响应。")
+            }
+
+            val root = runCatching { JSONObject(body) }.getOrElse {
+                throw IOException("AI 接口返回的内容不是合法 JSON。")
+            }
+            return root
+        }
+    }
+
+    private fun runBlockingSearchTool(call: SearchToolCall): SearchToolResult {
+        return kotlinx.coroutines.runBlocking {
+            searchTool.search(
+                query = call.query,
+                limit = call.limit,
+            )
+        }
+    }
+
+    private fun buildSearchToolDefinitions(): JSONArray {
+        return JSONArray().put(
+            JSONObject()
+                .put("type", "function")
+                .put(
+                    "function",
+                    JSONObject()
+                        .put("name", "search_tracks")
+                        .put("description", "Search tracks using the app's existing multi-source search system")
+                        .put(
+                            "parameters",
+                            JSONObject()
+                                .put("type", "object")
+                                .put(
+                                    "properties",
+                                    JSONObject()
+                                        .put(
+                                            "query",
+                                            JSONObject()
+                                                .put("type", "string")
+                                                .put("description", "A concise search query for songs or artists"),
+                                        )
+                                        .put(
+                                            "limit",
+                                            JSONObject()
+                                                .put("type", "integer")
+                                                .put("description", "Maximum number of compact candidates to return"),
+                                        ),
+                                )
+                                .put("required", JSONArray().put("query").put("limit")),
+                        ),
+                ),
+        )
     }
 
     private fun extractErrorMessage(

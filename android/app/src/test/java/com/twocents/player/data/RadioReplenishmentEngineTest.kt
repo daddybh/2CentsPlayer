@@ -257,6 +257,51 @@ class RadioReplenishmentEngineTest {
         assertTrue(trackLookup.resolveRequests.isEmpty())
     }
 
+    @Test
+    fun replenish_usesPreselectedTrackWithoutLookup() {
+        val candidateSource = FakeRadioCandidateSource(
+            responses = listOf(
+                listOf(
+                    AiSuggestedTrack(
+                        title = "晴天",
+                        artist = "周杰伦",
+                        reason = "命中偏好",
+                        bucket = RadioCandidateBucket.SAFE,
+                        resolvedTrack = track(
+                            id = "kuwo:228908",
+                            artist = "周杰伦",
+                            audioUrl = "https://audio.example/qingtian.mp3",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val trackLookup = FakeRadioTrackLookup(
+            matchedTracks = emptyMap(),
+            resolvedTracks = emptyMap(),
+        )
+        val engine = RadioReplenishmentEngine(
+            candidateSource = candidateSource,
+            trackLookup = trackLookup,
+        )
+
+        val result = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
+                favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
+                history = RadioHistorySnapshot(),
+                session = RadioSessionState(sessionId = 41L),
+                minimumRequiredAppend = 1,
+            )
+        }
+
+        assertEquals(1, result.appendedRecommendations.size)
+        assertEquals("kuwo:228908", result.appendedRecommendations.first().track.id)
+        assertTrue(result.appendedRecommendations.first().track.audioUrl.isNotBlank())
+        assertTrue(trackLookup.matchedTitles.isEmpty())
+        assertTrue(trackLookup.resolveRequests.isEmpty())
+    }
+
     private fun suggestedTrack(
         title: String,
         artist: String,

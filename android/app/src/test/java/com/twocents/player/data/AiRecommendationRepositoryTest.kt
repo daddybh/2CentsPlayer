@@ -8,6 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
 
 class AiRecommendationRepositoryTest {
     private lateinit var server: MockWebServer
@@ -76,5 +77,270 @@ class AiRecommendationRepositoryTest {
             listOf(RadioCandidateBucket.ADJACENT, RadioCandidateBucket.SAFE),
             result.map { it.bucket },
         )
+    }
+
+    @Test
+    fun parseToolSelection_parsesCandidateIdsAndBuckets() {
+        val parsed = repository.parseRadioToolSelectionForTest(
+            """
+            {
+              "recommendations": [
+                {"candidateId":"cand_1","reason":"理由1","bucket":"safe"},
+                {"candidateId":"cand_2","reason":"理由2","bucket":"adjacent"}
+              ]
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("cand_1", "cand_2"), parsed.map { it.candidateId })
+        assertEquals(listOf("理由1", "理由2"), parsed.map { it.reason })
+        assertEquals(
+            listOf(RadioCandidateBucket.SAFE, RadioCandidateBucket.ADJACENT),
+            parsed.map { it.bucket },
+        )
+    }
+
+    @Test
+    fun searchTool_returnsCompactCandidatesAndTrackMap() = runBlocking {
+        val tool = AiSearchTool { _, _ ->
+            MusicSearchPage(
+                tracks = listOf(
+                    Track(
+                        id = "netease:1",
+                        source = TrackSource.NETEASE,
+                        sourceId = "1",
+                        title = "晴天",
+                        artist = "周杰伦",
+                        album = "叶惠美",
+                        durationMs = 269_000L,
+                    ),
+                    Track(
+                        id = "kuwo:2",
+                        source = TrackSource.KUWO,
+                        sourceId = "2",
+                        title = "七里香",
+                        artist = "周杰伦",
+                        album = "七里香",
+                        durationMs = 301_000L,
+                    ),
+                ),
+                nextNeteaseOffset = 1,
+                nextKuwoOffset = 1,
+                canLoadMoreNetease = false,
+                canLoadMoreKuwo = false,
+            )
+        }
+
+        val result = tool.search(query = "周杰伦", limit = 2)
+
+        assertEquals(listOf("cand_1", "cand_2"), result.candidates.map { it.candidateId })
+        assertEquals(listOf("晴天", "七里香"), result.candidates.map { it.title })
+        assertEquals("netease:1", result.trackByCandidateId.getValue("cand_1").id)
+        assertEquals("kuwo", result.candidates[1].source)
+    }
+
+    @Test
+    fun requestRadioCandidates_callsSearchToolThenReturnsChosenCandidates() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(
+                    """
+                    {
+                      "choices": [
+                        {
+                          "message": {
+                            "content": "{\"tool\":\"search_tracks\",\"arguments\":{\"query\":\"周杰伦 经典\",\"limit\":4}}"
+                          }
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(
+                    """
+                    {
+                      "choices": [
+                        {
+                          "message": {
+                            "content": "{\"recommendations\":[{\"candidateId\":\"cand_1\",\"reason\":\"命中偏好\",\"bucket\":\"safe\"},{\"candidateId\":\"cand_2\",\"reason\":\"相邻扩展\",\"bucket\":\"adjacent\"}]}"
+                          }
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        var toolCallCount = 0
+        val injectedSearchTool = AiSearchTool { query, limit ->
+            toolCallCount += 1
+            assertEquals("周杰伦 经典", query)
+            assertEquals(4, limit)
+            MusicSearchPage(
+                tracks = listOf(
+                    Track(
+                        id = "netease:1",
+                        source = TrackSource.NETEASE,
+                        sourceId = "1",
+                        title = "晴天",
+                        artist = "周杰伦",
+                        album = "叶惠美",
+                        durationMs = 269_000L,
+                    ),
+                    Track(
+                        id = "kuwo:2",
+                        source = TrackSource.KUWO,
+                        sourceId = "2",
+                        title = "七里香",
+                        artist = "周杰伦",
+                        album = "七里香",
+                        durationMs = 301_000L,
+                    ),
+                ),
+                nextNeteaseOffset = 1,
+                nextKuwoOffset = 1,
+                canLoadMoreNetease = false,
+                canLoadMoreKuwo = false,
+            )
+        }
+        val repository = AiRecommendationRepository(
+            client = OkHttpClient(),
+            searchTool = injectedSearchTool,
+        )
+        val settings = AiServiceConfig(
+            endpoint = server.url("/v1").toString(),
+            model = "gpt-test",
+            accessKey = "test-key",
+        )
+        val request = RadioRecommendationRequest(
+            boundaryState = RadioBoundaryState.BALANCED,
+            waveTargets = RadioWaveTargets(safeCount = 1, adjacentCount = 1, surpriseCount = 0),
+            rawCandidateLimit = 4,
+            favoriteSeeds = listOf(
+                Track(
+                    id = "seed-1",
+                    title = "Seed Song",
+                    artist = "Seed Artist",
+                ),
+            ),
+            positiveTrackIds = emptySet(),
+            negativeTrackIds = emptySet(),
+            avoidTrackIds = emptySet(),
+            avoidArtistKeys = emptySet(),
+        )
+
+        val result = repository.requestRadioCandidates(settings, request)
+        val firstRequestBody = server.takeRequest().body.readUtf8()
+        val secondRequestBody = server.takeRequest().body.readUtf8()
+
+        assertEquals(1, toolCallCount)
+        assertTrue(firstRequestBody.contains("\"tools\""))
+        assertTrue(firstRequestBody.contains("\"tool_choice\":\"required\""))
+        assertTrue(firstRequestBody.contains("search_tracks"))
+        assertTrue(secondRequestBody.contains("cand_1"))
+        assertTrue(secondRequestBody.contains("晴天"))
+        assertEquals(listOf("晴天", "七里香"), result.map { it.title })
+        assertEquals(listOf(RadioCandidateBucket.SAFE, RadioCandidateBucket.ADJACENT), result.map { it.bucket })
+    }
+
+    @Test
+    fun requestRadioCandidates_supportsNativeToolCallResponses() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(
+                    """
+                    {
+                      "choices": [
+                        {
+                          "message": {
+                            "content": null,
+                            "tool_calls": [
+                              {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                  "name": "search_tracks",
+                                  "arguments": "{\"query\":\"周杰伦 经典\",\"limit\":4}"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(
+                    """
+                    {
+                      "choices": [
+                        {
+                          "message": {
+                            "content": "{\"recommendations\":[{\"candidateId\":\"cand_1\",\"reason\":\"命中偏好\",\"bucket\":\"safe\"}]}"
+                          }
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        var toolCallCount = 0
+        val repository = AiRecommendationRepository(
+            client = OkHttpClient(),
+            searchTool = AiSearchTool { query, limit ->
+                toolCallCount += 1
+                assertEquals("周杰伦 经典", query)
+                assertEquals(4, limit)
+                MusicSearchPage(
+                    tracks = listOf(
+                        Track(
+                            id = "netease:1",
+                            source = TrackSource.NETEASE,
+                            sourceId = "1",
+                            title = "晴天",
+                            artist = "周杰伦",
+                            album = "叶惠美",
+                            durationMs = 269_000L,
+                        ),
+                    ),
+                    nextNeteaseOffset = 1,
+                    nextKuwoOffset = 0,
+                    canLoadMoreNetease = false,
+                    canLoadMoreKuwo = false,
+                )
+            },
+        )
+        val settings = AiServiceConfig(
+            endpoint = server.url("/v1").toString(),
+            model = "gpt-test",
+            accessKey = "test-key",
+        )
+        val request = RadioRecommendationRequest(
+            boundaryState = RadioBoundaryState.BALANCED,
+            waveTargets = RadioWaveTargets(safeCount = 1, adjacentCount = 0, surpriseCount = 0),
+            rawCandidateLimit = 4,
+            favoriteSeeds = emptyList(),
+            positiveTrackIds = emptySet(),
+            negativeTrackIds = emptySet(),
+            avoidTrackIds = emptySet(),
+            avoidArtistKeys = emptySet(),
+        )
+
+        val result = repository.requestRadioCandidates(settings, request)
+
+        assertEquals(1, toolCallCount)
+        assertEquals(listOf("晴天"), result.map { it.title })
+        assertEquals(listOf(RadioCandidateBucket.SAFE), result.map { it.bucket })
     }
 }
