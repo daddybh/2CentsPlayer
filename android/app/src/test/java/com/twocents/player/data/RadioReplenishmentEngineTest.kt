@@ -302,6 +302,64 @@ class RadioReplenishmentEngineTest {
         assertTrue(trackLookup.resolveRequests.isEmpty())
     }
 
+    @Test
+    fun replenish_fastStartBatchesPlayableResolutionForPreselectedCandidates() {
+        val candidateSource = FakeRadioCandidateSource(
+            responses = listOf(
+                listOf(
+                    AiSuggestedTrack(
+                        title = "first-unplayable",
+                        artist = "Artist 1",
+                        reason = "reason-1",
+                        bucket = RadioCandidateBucket.SAFE,
+                        resolvedTrack = track(
+                            id = "first-unplayable",
+                            artist = "Artist 1",
+                        ),
+                    ),
+                    AiSuggestedTrack(
+                        title = "second-playable",
+                        artist = "Artist 2",
+                        reason = "reason-2",
+                        bucket = RadioCandidateBucket.ADJACENT,
+                        resolvedTrack = track(
+                            id = "second-playable",
+                            artist = "Artist 2",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val trackLookup = FakeRadioTrackLookup(
+            matchedTracks = emptyMap(),
+            resolvedTracks = mapOf(
+                "second-playable" to track(
+                    id = "second-playable",
+                    artist = "Artist 2",
+                    audioUrl = "https://audio.example/second-playable.mp3",
+                ),
+            ),
+        )
+        val engine = RadioReplenishmentEngine(
+            candidateSource = candidateSource,
+            trackLookup = trackLookup,
+        )
+
+        val result = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
+                favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
+                history = RadioHistorySnapshot(),
+                session = RadioSessionState(sessionId = 51L),
+                minimumRequiredAppend = 1,
+            )
+        }
+
+        assertEquals(listOf("second-playable"), result.appendedRecommendations.map { it.track.id })
+        assertEquals(listOf(listOf("first-unplayable", "second-playable")), trackLookup.resolveRequests)
+        assertTrue(trackLookup.matchedTitles.isEmpty())
+    }
+
     private fun suggestedTrack(
         title: String,
         artist: String,

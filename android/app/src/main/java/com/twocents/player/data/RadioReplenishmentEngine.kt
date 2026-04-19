@@ -169,6 +169,8 @@ class RadioReplenishmentEngine(
         existingQueue: List<AiRecommendedTrack>,
         boundaryState: RadioBoundaryState,
     ): List<RadioResolvedCandidate> {
+        val unresolvedCandidates = mutableListOf<RadioResolvedCandidate>()
+
         for (suggestion in suggestions) {
             val matchedTrack = suggestion.resolvedTrack ?: trackLookup.findBestMatchTrack(
                 title = suggestion.title,
@@ -184,11 +186,30 @@ class RadioReplenishmentEngine(
             )
             if (candidate.recommendation.track.isLocallyExcluded(request)) continue
 
-            val finalTrack = if (matchedTrack.audioUrl.isBlank()) {
-                trackLookup.resolvePlayableTracks(listOf(matchedTrack)).firstOrNull() ?: matchedTrack
-            } else {
-                matchedTrack
+            if (matchedTrack.audioUrl.isBlank()) {
+                unresolvedCandidates += candidate
+                continue
             }
+
+            val appended = composer.compose(
+                existingQueue = existingQueue,
+                candidates = listOf(
+                    candidate,
+                ),
+                boundaryState = boundaryState,
+            )
+            if (appended.isNotEmpty()) return appended
+        }
+
+        if (unresolvedCandidates.isEmpty()) return emptyList()
+
+        val resolvedPlayableById = trackLookup.resolvePlayableTracks(
+            unresolvedCandidates.map { it.recommendation.track },
+        ).associateBy { it.id }
+
+        for (candidate in unresolvedCandidates) {
+            val finalTrack = resolvedPlayableById[candidate.recommendation.track.id]
+                ?: candidate.recommendation.track
             if (finalTrack.audioUrl.isBlank()) continue
 
             val appended = composer.compose(
