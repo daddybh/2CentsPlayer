@@ -1,5 +1,6 @@
 package com.twocents.player.data
 
+import android.util.Log
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -7,6 +8,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
@@ -237,16 +239,25 @@ class NeteaseSearchRepository(
     private fun resolvePlaybackDetails(trackIds: List<String>): Map<String, PlaybackDetails> {
         if (trackIds.isEmpty()) return emptyMap()
 
+        val officialStart = System.currentTimeMillis()
         val officialPlaybackDetails = runCatching {
             resolveOfficialPlaybackDetails(trackIds)
         }.getOrDefault(emptyMap())
+        val officialMs = System.currentTimeMillis() - officialStart
+        val officialResolved = officialPlaybackDetails.count { !it.value.isPreviewOnly }
+        Log.d(TAG, "    Netease官方: ${officialResolved}/${trackIds.size} 完整, ${officialPlaybackDetails.size - officialResolved} 试听 (${officialMs}ms)")
+
         val fallbackTrackIds = trackIds.filter { trackId ->
             val details = officialPlaybackDetails[trackId]
             details == null || details.isPreviewOnly
         }
         if (fallbackTrackIds.isEmpty()) return officialPlaybackDetails
 
+        val fallbackStart = System.currentTimeMillis()
         val fallbackPlaybackDetails = resolveThirdPartyPlaybackDetails(fallbackTrackIds)
+        val fallbackMs = System.currentTimeMillis() - fallbackStart
+        Log.d(TAG, "    Netease第三方: ${fallbackPlaybackDetails.size}/${fallbackTrackIds.size} 成功 (${fallbackMs}ms)")
+
         return buildMap(trackIds.size) {
             trackIds.forEach { trackId ->
                 val preferredDetails = fallbackPlaybackDetails[trackId] ?: officialPlaybackDetails[trackId]
@@ -358,10 +369,23 @@ class NeteaseSearchRepository(
     }
 
     private fun resolveThirdPartyPlaybackDetails(trackIds: List<String>): Map<String, PlaybackDetails> {
-        return buildMap(trackIds.size) {
-            trackIds.forEach { trackId ->
-                resolveThirdPartyPlaybackDetails(trackId)?.let { put(trackId, it) }
+        if (trackIds.isEmpty()) return emptyMap()
+        val executor = Executors.newFixedThreadPool(trackIds.size.coerceAtMost(4))
+        try {
+            val futures = trackIds.map { trackId ->
+                executor.submit<Pair<String, PlaybackDetails>?> {
+                    resolveThirdPartyPlaybackDetails(trackId)?.let { trackId to it }
+                }
             }
+            return buildMap(trackIds.size) {
+                futures.forEach { future ->
+                    runCatching { future.get(10, TimeUnit.SECONDS) }
+                        .getOrNull()
+                        ?.let { (id, details) -> put(id, details) }
+                }
+            }
+        } finally {
+            executor.shutdown()
         }
     }
 
@@ -468,6 +492,7 @@ class NeteaseSearchRepository(
     }
 
     private companion object {
+        const val TAG = "RadioEngine"
         const val MATCH_LIMIT = 8
         const val OFFICIAL_PLAYBACK_LEVEL = "standard"
         const val OFFICIAL_PLAYBACK_URL = "https://interface3.music.163.com/eapi/song/enhance/player/url/v1"

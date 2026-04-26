@@ -237,6 +237,7 @@ fun PlayerApp(
                 onEndpointChange = viewModel::updateAiEndpoint,
                 onModelChange = viewModel::updateAiModel,
                 onAccessKeyChange = viewModel::updateAiAccessKey,
+                onLastFmApiKeyChange = viewModel::updateLastFmApiKey,
                 onSave = viewModel::saveAiSettings,
                 onClose = viewModel::closeAiSettings,
             )
@@ -1657,6 +1658,7 @@ private fun AiSettingsSheet(
     onEndpointChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onAccessKeyChange: (String) -> Unit,
+    onLastFmApiKeyChange: (String) -> Unit,
     onSave: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -1679,7 +1681,7 @@ private fun AiSettingsSheet(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "支持 OpenAI 兼容的 Chat Completions 接口。",
+                    text = "支持 OpenAI 兼容接口 + Last.fm 快速推荐。",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextTertiary,
                 )
@@ -1696,7 +1698,7 @@ private fun AiSettingsSheet(
 
         SearchHintCard(
             title = "填写方式",
-            body = "接口地址可填写完整的 /chat/completions 地址，也可以填写到 /v1，应用会自动补全。保存后会根据你的收藏夹生成推荐。",
+            body = "接口地址可填写完整的 /chat/completions 地址，也可以填写到 /v1，应用会自动补全。填写 Last.fm API Key 可获得秒级推荐。",
         )
 
         OutlinedTextField(
@@ -1757,9 +1759,8 @@ private fun AiSettingsSheet(
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Password,
-                imeAction = ImeAction.Done,
+                imeAction = ImeAction.Next,
             ),
-            keyboardActions = KeyboardActions(onDone = { onSave() }),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = AccentMint,
                 unfocusedBorderColor = TextMuted.copy(alpha = 0.65f),
@@ -1773,10 +1774,43 @@ private fun AiSettingsSheet(
             ),
         )
 
-        if (state.missingFields().isNotEmpty()) {
+        OutlinedTextField(
+            value = state.lastFmApiKey,
+            onValueChange = onLastFmApiKeyChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = {
+                Text("Last.fm API Key（可选，加速推荐）")
+            },
+            supportingText = {
+                Text(
+                    text = "在 last.fm/api 免费注册获取，可大幅提升推荐速度",
+                    color = TextTertiary,
+                )
+            },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(onDone = { onSave() }),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = AccentSky,
+                unfocusedBorderColor = TextMuted.copy(alpha = 0.65f),
+                focusedLabelColor = AccentSky,
+                unfocusedLabelColor = TextTertiary,
+                cursorColor = AccentSky,
+                focusedTextColor = TextPrimary,
+                unfocusedTextColor = TextPrimary,
+                focusedContainerColor = SurfaceSecondary.copy(alpha = 0.64f),
+                unfocusedContainerColor = SurfaceSecondary.copy(alpha = 0.38f),
+            ),
+        )
+
+        if (state.missingFields().isNotEmpty() && state.lastFmApiKey.isBlank()) {
             SearchHintCard(
                 title = "还差这些信息",
-                body = state.missingFields().joinToString(separator = "、"),
+                body = state.missingFields().joinToString(separator = "、") + "（或只填 Last.fm API Key 也能用）",
             )
         } else if (favoriteCount == 0) {
             SearchHintCard(

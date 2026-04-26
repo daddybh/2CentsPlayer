@@ -4,9 +4,13 @@ data class AiServiceConfig(
     val endpoint: String = "",
     val model: String = "",
     val accessKey: String = "",
+    val lastFmApiKey: String = "",
 ) {
     val isComplete: Boolean
         get() = endpoint.isNotBlank() && model.isNotBlank() && accessKey.isNotBlank()
+
+    val hasLastFm: Boolean
+        get() = lastFmApiKey.isNotBlank()
 
     fun chatCompletionsUrl(): String {
         val rawEndpoint = endpoint.trim()

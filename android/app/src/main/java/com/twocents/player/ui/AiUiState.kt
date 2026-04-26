@@ -7,6 +7,7 @@ data class AiSettingsUiState(
     val endpoint: String = "",
     val model: String = "",
     val accessKey: String = "",
+    val lastFmApiKey: String = "",
 ) {
     val isConfigured: Boolean
         get() = endpoint.isNotBlank() && model.isNotBlank() && accessKey.isNotBlank()

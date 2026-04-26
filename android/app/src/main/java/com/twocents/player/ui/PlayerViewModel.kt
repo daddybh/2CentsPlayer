@@ -11,6 +11,7 @@ import com.twocents.player.data.AiRecommendedTrack
 import com.twocents.player.data.AiServiceConfig
 import com.twocents.player.data.AiSettingsStore
 import com.twocents.player.data.FavoritesStore
+import com.twocents.player.data.LastFmRepository
 import com.twocents.player.data.MusicLibraryRepository
 import com.twocents.player.data.RadioSessionStore
 import com.twocents.player.data.PlaybackState
@@ -80,6 +81,7 @@ class PlayerViewModel(
     }
 
     private val aiRecommendationRepository = AiRecommendationRepository()
+    private val lastFmRepository = LastFmRepository()
     private val aiSettingsStore = AiSettingsStore(application)
     private val musicLibraryRepository = MusicLibraryRepository()
     private val favoritesStore = FavoritesStore(application)
@@ -88,6 +90,7 @@ class PlayerViewModel(
     private val radioEngine = RadioReplenishmentEngine(
         candidateSource = aiRecommendationRepository,
         trackLookup = musicLibraryRepository,
+        fastCandidateSource = lastFmRepository,
     )
     private val shuffleRandom = Random(System.currentTimeMillis())
     private val lyricsCache = mutableMapOf<String, LyricsContent>()
@@ -131,6 +134,7 @@ class PlayerViewModel(
             endpoint = initialAiSettings.endpoint,
             model = initialAiSettings.model,
             accessKey = initialAiSettings.accessKey,
+            lastFmApiKey = initialAiSettings.lastFmApiKey,
         ),
     )
         private set
@@ -142,7 +146,7 @@ class PlayerViewModel(
         private set
 
     init {
-        if (initialAiSettings.isComplete && initialFavorites.isNotEmpty()) {
+        if ((initialAiSettings.isComplete || initialAiSettings.hasLastFm) && initialFavorites.isNotEmpty()) {
             val cached = radioSessionStore.loadRecommendations()
             if (cached.isNotEmpty()) {
                 restoreCachedAiRecommendations(cached)
@@ -315,6 +319,10 @@ class PlayerViewModel(
         aiSettingsState = aiSettingsState.copy(accessKey = accessKey)
     }
 
+    fun updateLastFmApiKey(apiKey: String) {
+        aiSettingsState = aiSettingsState.copy(lastFmApiKey = apiKey)
+    }
+
     fun saveAiSettings() {
         val config = buildAiServiceConfig()
         aiSettingsStore.saveSettings(config)
@@ -322,9 +330,10 @@ class PlayerViewModel(
             endpoint = config.endpoint,
             model = config.model,
             accessKey = config.accessKey,
+            lastFmApiKey = config.lastFmApiKey,
         )
 
-        if (config.isComplete) {
+        if (config.isComplete || config.hasLastFm) {
             refreshAiRecommendations()
         } else {
             clearAiRecommendations()
@@ -359,10 +368,10 @@ class PlayerViewModel(
         if (aiRecommendationState.isLoading) return
 
         val config = buildAiServiceConfig()
-        if (!config.isComplete) {
+        if (!config.isComplete && !config.hasLastFm) {
             aiRecommendationState = aiRecommendationState.copy(
                 isLoading = false,
-                errorMessage = "先在设置里填好 AI 接口、模型和 Access Key。",
+                errorMessage = "先在设置里填好 AI 接口或 Last.fm API Key。",
             )
             if (playAfterRefresh) {
                 openAiSettings()
@@ -1058,7 +1067,7 @@ class PlayerViewModel(
         }
 
         val config = buildAiServiceConfig()
-        if (!config.isComplete) return
+        if (!config.isComplete && !config.hasLastFm) return
 
         val favorites = favoritesState.tracks.map(::normalizeTrack)
         if (favorites.isEmpty()) return
@@ -1494,6 +1503,7 @@ class PlayerViewModel(
             endpoint = config.endpoint,
             model = config.model,
             accessKey = config.accessKey,
+            lastFmApiKey = config.lastFmApiKey,
         )
     }
 
@@ -1502,6 +1512,7 @@ class PlayerViewModel(
             endpoint = aiSettingsState.endpoint.trim(),
             model = aiSettingsState.model.trim(),
             accessKey = aiSettingsState.accessKey.trim(),
+            lastFmApiKey = aiSettingsState.lastFmApiKey.trim(),
         )
     }
 

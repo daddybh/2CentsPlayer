@@ -18,8 +18,7 @@ class RadioQueueComposer {
             .toMutableSet()
 
         val remaining = candidates.filter { candidate ->
-            candidate.recommendation.track.audioUrl.isNotBlank() &&
-                candidate.recommendation.track.id !in existingTrackIds
+            candidate.recommendation.track.id !in existingTrackIds
         }.toMutableList()
 
         val orderedBuckets = when (boundaryState) {
