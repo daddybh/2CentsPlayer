@@ -1,6 +1,5 @@
 package com.twocents.player.data
 
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -9,11 +8,8 @@ import kotlinx.coroutines.coroutineScope
 class MusicLibraryRepository(
     private val neteaseRepository: MusicSourceRepository = NeteaseSearchRepository(),
     private val kuwoRepository: MusicSourceRepository = KuwoSearchRepository(),
+    private val logger: RadioDiagnosticLogger = NoOpRadioDiagnosticLogger,
 ) : RadioTrackLookup {
-
-    private companion object {
-        const val TAG = "RadioEngine"
-    }
 
     suspend fun searchTracks(
         keyword: String,
@@ -127,7 +123,7 @@ class MusicLibraryRepository(
         if (tracks.isEmpty()) return emptyList()
         val resolveStart = System.currentTimeMillis()
         val sourceCounts = tracks.groupBy { it.source }.mapValues { it.value.size }
-        Log.d(TAG, "resolvePlayable: ${tracks.size} 首, 来源分布=$sourceCounts")
+        logger.debug("resolvePlayable: ${tracks.size} 首, 来源分布=$sourceCounts")
 
         val normalizedTracks = tracks.map(Track::withCanonicalIdentity)
         val primaryStart = System.currentTimeMillis()
@@ -142,7 +138,7 @@ class MusicLibraryRepository(
                         .resolvePlayableTracks(sourceTracks)
                         .map(Track::withCanonicalIdentity)
                     val srcMs = System.currentTimeMillis() - srcStart
-                    Log.d(TAG, "  主源 ${source.name}: ${sourceTracks.size} 首 → ${result.count { it.audioUrl.isNotBlank() }} 有URL (${srcMs}ms)")
+                    logger.debug("  主源 ${source.name}: ${sourceTracks.size} 首 → ${result.count { it.audioUrl.isNotBlank() }} 有URL (${srcMs}ms)")
                     result
                 }
             }
@@ -155,7 +151,7 @@ class MusicLibraryRepository(
         }
         val primaryMs = System.currentTimeMillis() - primaryStart
         val primaryResolved = normalizedTracks.count { resolvedById[it.id]?.audioUrl?.isNotBlank() == true }
-        Log.d(TAG, "  主源解析完毕: $primaryResolved/${tracks.size} 有URL (${primaryMs}ms)")
+        logger.debug("  主源解析完毕: $primaryResolved/${tracks.size} 有URL (${primaryMs}ms)")
 
         val fallbackStart = System.currentTimeMillis()
         val fallbackNeeded = normalizedTracks.count { track ->
@@ -175,10 +171,10 @@ class MusicLibraryRepository(
             }.awaitAll().filterNotNull().associateBy { it.id }
         }
         val fallbackMs = System.currentTimeMillis() - fallbackStart
-        Log.d(TAG, "  备源解析: 需要 $fallbackNeeded 首, 成功 ${fallbackResolvedById.size} 首 (${fallbackMs}ms)")
+        logger.debug("  备源解析: 需要 $fallbackNeeded 首, 成功 ${fallbackResolvedById.size} 首 (${fallbackMs}ms)")
 
         val totalMs = System.currentTimeMillis() - resolveStart
-        Log.d(TAG, "  resolvePlayable 总计: ${totalMs}ms")
+        logger.debug("  resolvePlayable 总计: ${totalMs}ms")
 
         return normalizedTracks.map { track ->
             val resolvedTrack = resolvedById[track.id]

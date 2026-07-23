@@ -7,7 +7,7 @@ import org.junit.Test
 
 class RadioReplenishmentEngineTest {
     @Test
-    fun replenish_retriesUntilMinimumPlayableCountIsReached() {
+    fun replenish_acceptsPartialResultAfterSingleAiAttempt() {
         val candidateSource = FakeRadioCandidateSource(
             responses = listOf(
                 listOf(
@@ -53,17 +53,14 @@ class RadioReplenishmentEngineTest {
             )
         }
 
-        assertEquals(2, candidateSource.callCount)
-        assertEquals(4, result.appendedRecommendations.size)
+        assertEquals(1, candidateSource.callCount)
+        assertEquals(3, result.appendedRecommendations.size)
         assertEquals(
-            listOf("first-safe", "first-adjacent", "second-safe", "second-adjacent"),
+            listOf("first-adjacent", "first-missing", "first-safe"),
             result.appendedRecommendations.map { it.track.id },
         )
-        assertTrue(result.appendedRecommendations.all { it.track.audioUrl.isNotBlank() })
         assertEquals(RadioBoundaryState.BALANCED, candidateSource.requests[0].boundaryState)
         assertEquals(RadioWaveTargets(4, 2, 1), candidateSource.requests[0].waveTargets)
-        assertEquals(RadioBoundaryState.RECOVERING, candidateSource.requests[1].boundaryState)
-        assertEquals(RadioWaveTargets(5, 1, 0), candidateSource.requests[1].waveTargets)
     }
 
     @Test
@@ -75,13 +72,7 @@ class RadioReplenishmentEngineTest {
                 listOf(suggestedTrack("missing-3", "Artist 3", RadioCandidateBucket.SURPRISE)),
             ),
         )
-        val trackLookup = FakeRadioTrackLookup(
-            matchedTracks = mapOf(
-                "missing-1" to track("missing-1", "Artist 1"),
-                "missing-2" to track("missing-2", "Artist 2"),
-                "missing-3" to track("missing-3", "Artist 3"),
-            ),
-        )
+        val trackLookup = FakeRadioTrackLookup(matchedTracks = emptyMap())
         val engine = RadioReplenishmentEngine(
             candidateSource = candidateSource,
             trackLookup = trackLookup,
@@ -97,7 +88,7 @@ class RadioReplenishmentEngineTest {
         }
 
         assertTrue(result.appendedRecommendations.isEmpty())
-        assertEquals(3, candidateSource.callCount)
+        assertEquals(1, candidateSource.callCount)
         assertEquals(RadioBoundaryState.RECOVERING, result.updatedSession.boundaryState)
         assertEquals("回到熟悉区", result.updatedSession.statusLabel)
     }
@@ -145,14 +136,13 @@ class RadioReplenishmentEngineTest {
                     sessionId = 13L,
                     playedTrackIds = setOf("played-1"),
                 ),
+                minimumRequiredAppend = 5,
             )
         }
 
         assertEquals(1, candidateSource.callCount)
-        assertEquals(
-            listOf("allowed-1", "allowed-2", "allowed-3", "allowed-4"),
-            result.appendedRecommendations.map { it.track.id },
-        )
+        assertEquals(5, result.appendedRecommendations.size)
+        assertTrue("artist-blocked-1" in result.appendedRecommendations.map { it.track.id })
     }
 
     @Test
@@ -355,9 +345,162 @@ class RadioReplenishmentEngineTest {
             )
         }
 
-        assertEquals(listOf("second-playable"), result.appendedRecommendations.map { it.track.id })
-        assertEquals(listOf(listOf("first-unplayable", "second-playable")), trackLookup.resolveRequests)
+        assertEquals(listOf("first-unplayable"), result.appendedRecommendations.map { it.track.id })
+        assertTrue(trackLookup.resolveRequests.isEmpty())
         assertTrue(trackLookup.matchedTitles.isEmpty())
+    }
+
+    @Test
+    fun replenish_fastSourceStartsWithoutAiConfiguration() {
+        val fastSource = FakeRadioCandidateSource(
+            responses = listOf(
+                listOf(
+                    AiSuggestedTrack(
+                        title = "local",
+                        artist = "Local Artist",
+                        resolvedTrack = track("local", "Local Artist"),
+                        matchedSeedIds = setOf("favorite-1"),
+                        retrievalSources = setOf("netease-simi"),
+                    ),
+                ),
+            ),
+        )
+        val aiSource = ThrowingCandidateSource()
+        val engine = RadioReplenishmentEngine(
+            candidateSource = aiSource,
+            fastCandidateSource = fastSource,
+            trackLookup = FakeRadioTrackLookup(emptyMap()),
+        )
+
+        val result = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(),
+                favorites = listOf(track("favorite-1", "Favorite Artist")),
+                history = RadioHistorySnapshot(),
+                session = RadioSessionState(61L),
+                minimumRequiredAppend = 1,
+            )
+        }
+
+        assertEquals(listOf("local"), result.appendedRecommendations.map { it.track.id })
+        assertEquals(0, aiSource.callCount)
+    }
+
+    @Test
+    fun replenish_keepsPartialFastResultsWhenAiFallbackFails() {
+        val fastSource = FakeRadioCandidateSource(
+            responses = listOf(
+                listOf(
+                    AiSuggestedTrack(
+                        title = "local-1",
+                        artist = "Local Artist 1",
+                        resolvedTrack = track("local-1", "Local Artist 1"),
+                    ),
+                    AiSuggestedTrack(
+                        title = "local-2",
+                        artist = "Local Artist 2",
+                        resolvedTrack = track("local-2", "Local Artist 2"),
+                    ),
+                ),
+            ),
+        )
+        val aiSource = ThrowingCandidateSource()
+        val engine = RadioReplenishmentEngine(
+            candidateSource = aiSource,
+            fastCandidateSource = fastSource,
+            trackLookup = FakeRadioTrackLookup(emptyMap()),
+        )
+
+        val result = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(endpoint = "https://api.example", model = "m", accessKey = "k"),
+                favorites = listOf(track("favorite-1", "Favorite Artist")),
+                history = RadioHistorySnapshot(),
+                session = RadioSessionState(62L),
+            )
+        }
+
+        assertEquals(listOf("local-1", "local-2"), result.appendedRecommendations.map { it.track.id })
+        assertEquals(1, aiSource.callCount)
+    }
+
+    @Test
+    fun replenish_doesNotRepeatAiImmediatelyWhenFastAndAiSourcesBothYieldNothing() {
+        val aiSource = ThrowingCandidateSource()
+        val engine = RadioReplenishmentEngine(
+            candidateSource = aiSource,
+            fastCandidateSource = FakeRadioCandidateSource(responses = listOf(emptyList())),
+            trackLookup = FakeRadioTrackLookup(emptyMap()),
+        )
+
+        runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(endpoint = "https://api.example", model = "m", accessKey = "k"),
+                favorites = listOf(track("favorite-1", "Favorite Artist")),
+                history = RadioHistorySnapshot(),
+                session = RadioSessionState(63L),
+            )
+        }
+
+        assertEquals(1, aiSource.callCount)
+    }
+
+    @Test
+    fun replenish_rotatesSeedsAcrossRequestsInTheSameSession() {
+        val fastSource = FakeRadioCandidateSource(
+            responses = listOf(
+                listOf(
+                    AiSuggestedTrack(
+                        title = "local-1",
+                        artist = "Local Artist 1",
+                        resolvedTrack = track("local-1", "Local Artist 1"),
+                    ),
+                ),
+                listOf(
+                    AiSuggestedTrack(
+                        title = "local-2",
+                        artist = "Local Artist 2",
+                        resolvedTrack = track("local-2", "Local Artist 2"),
+                    ),
+                ),
+            ),
+        )
+        val favorites = (1..4).map { index ->
+            track("favorite-$index", "Favorite Artist $index")
+        }
+        val engine = RadioReplenishmentEngine(
+            candidateSource = ThrowingCandidateSource(),
+            fastCandidateSource = fastSource,
+            trackLookup = FakeRadioTrackLookup(emptyMap()),
+        )
+
+        val firstResult = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(),
+                favorites = favorites,
+                history = RadioHistorySnapshot(),
+                session = RadioSessionState(64L),
+                minimumRequiredAppend = 1,
+            )
+        }
+        runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(),
+                favorites = favorites,
+                history = RadioHistorySnapshot(),
+                session = firstResult.updatedSession,
+                minimumRequiredAppend = 1,
+            )
+        }
+
+        assertEquals(
+            listOf("favorite-1", "favorite-2", "favorite-3"),
+            fastSource.requests[0].favoriteSeeds.map(Track::id),
+        )
+        assertEquals(
+            listOf("favorite-4", "favorite-1", "favorite-2"),
+            fastSource.requests[1].favoriteSeeds.map(Track::id),
+        )
     }
 
     private fun suggestedTrack(
@@ -401,6 +544,18 @@ class RadioReplenishmentEngineTest {
             val response = responses.getOrElse(callCount) { emptyList() }
             callCount += 1
             return response
+        }
+    }
+
+    private class ThrowingCandidateSource : RadioCandidateSource {
+        var callCount = 0
+
+        override fun requestRadioCandidates(
+            settings: AiServiceConfig,
+            request: RadioRecommendationRequest,
+        ): List<AiSuggestedTrack> {
+            callCount += 1
+            error("AI unavailable")
         }
     }
 

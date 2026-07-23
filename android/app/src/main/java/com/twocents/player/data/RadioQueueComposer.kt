@@ -3,6 +3,10 @@ package com.twocents.player.data
 data class RadioResolvedCandidate(
     val recommendation: AiRecommendedTrack,
     val bucket: RadioCandidateBucket,
+    val matchedSeedIds: Set<String> = emptySet(),
+    val retrievalSources: Set<String> = emptySet(),
+    val score: Int = 0,
+    val stableKey: String = "",
 )
 
 class RadioQueueComposer {
@@ -11,62 +15,54 @@ class RadioQueueComposer {
         candidates: List<RadioResolvedCandidate>,
         boundaryState: RadioBoundaryState,
     ): List<RadioResolvedCandidate> {
+        val maximumCount = when (boundaryState) {
+            RadioBoundaryState.BALANCED,
+            RadioBoundaryState.EXPANDING,
+            -> 6
+            RadioBoundaryState.RECOVERING -> 4
+        }
         val existingTrackIds = existingQueue.map { it.track.id }.toSet()
-        val usedArtistKeys = existingQueue
+        val existingStableKeys = existingQueue.map { stableTrackKey(it.track) }.toSet()
+        val recentArtists = existingQueue.takeLast(2)
             .map { artistKey(it.track.artist) }
-            .filter { it.isNotBlank() }
-            .toMutableSet()
-
-        val remaining = candidates.filter { candidate ->
-            candidate.recommendation.track.id !in existingTrackIds
-        }.toMutableList()
-
-        val orderedBuckets = when (boundaryState) {
-            RadioBoundaryState.BALANCED -> listOf(
-                RadioCandidateBucket.SAFE,
-                RadioCandidateBucket.ADJACENT,
-                RadioCandidateBucket.SAFE,
-                RadioCandidateBucket.SURPRISE,
-                RadioCandidateBucket.SAFE,
-                RadioCandidateBucket.ADJACENT,
+            .filter(String::isNotBlank)
+            .toMutableList()
+        val remaining = candidates.asSequence()
+            .filterNot { it.recommendation.track.id in existingTrackIds }
+            .filterNot { stableTrackKey(it.recommendation.track) in existingStableKeys }
+            .distinctBy { it.stableKey.ifBlank { stableTrackKey(it.recommendation.track) } }
+            .sortedWith(
+                compareByDescending<RadioResolvedCandidate>(RadioResolvedCandidate::score)
+                    .thenBy { it.stableKey.ifBlank { stableTrackKey(it.recommendation.track) } },
             )
+            .toMutableList()
+        val selected = mutableListOf<RadioResolvedCandidate>()
 
-            RadioBoundaryState.EXPANDING -> listOf(
-                RadioCandidateBucket.SAFE,
-                RadioCandidateBucket.ADJACENT,
-                RadioCandidateBucket.SURPRISE,
-                RadioCandidateBucket.ADJACENT,
-                RadioCandidateBucket.SAFE,
-                RadioCandidateBucket.SAFE,
-            )
-
-            RadioBoundaryState.RECOVERING -> listOf(
-                RadioCandidateBucket.SAFE,
-                RadioCandidateBucket.SAFE,
-                RadioCandidateBucket.ADJACENT,
-                RadioCandidateBucket.SAFE,
-            )
+        while (remaining.isNotEmpty() && selected.size < maximumCount) {
+            val strictIndex = remaining.indexOfFirst { candidate ->
+                val artist = artistKey(candidate.recommendation.track.artist)
+                val artistAllowed = artist.isBlank() || artist !in recentArtists.takeLast(2)
+                val surpriseAllowed = selected.size >= 3 || candidate.bucket != RadioCandidateBucket.SURPRISE
+                artistAllowed && surpriseAllowed
+            }
+            val relaxedSurpriseIndex = if (strictIndex < 0 && selected.size < 3) {
+                remaining.indexOfFirst { it.bucket != RadioCandidateBucket.SURPRISE }
+            } else {
+                -1
+            }
+            val selectedIndex = when {
+                strictIndex >= 0 -> strictIndex
+                relaxedSurpriseIndex >= 0 -> relaxedSurpriseIndex
+                else -> 0
+            }
+            val candidate = remaining.removeAt(selectedIndex)
+            selected += candidate
+            artistKey(candidate.recommendation.track.artist)
+                .takeIf(String::isNotBlank)
+                ?.let(recentArtists::add)
         }
 
-        val resolved = mutableListOf<RadioResolvedCandidate>()
-        orderedBuckets.forEach { bucket ->
-            val selectedIndex = remaining.indexOfFirst { candidate ->
-                candidate.bucket == bucket &&
-                    artistKey(candidate.recommendation.track.artist).let { key ->
-                        key.isBlank() || key !in usedArtistKeys
-                    }
-            }
-            if (selectedIndex < 0) return@forEach
-
-            val selected = remaining.removeAt(selectedIndex)
-            val key = artistKey(selected.recommendation.track.artist)
-            if (key.isNotBlank()) {
-                usedArtistKeys += key
-            }
-            resolved += selected
-        }
-
-        return resolved
+        return selected
     }
 
     private fun artistKey(artist: String): String {
@@ -76,5 +72,10 @@ class RadioQueueComposer {
             .orEmpty()
             .trim()
             .lowercase()
+    }
+
+    private fun stableTrackKey(track: Track): String {
+        val title = track.title.lowercase().filter(Char::isLetterOrDigit)
+        return "$title::${artistKey(track.artist)}"
     }
 }

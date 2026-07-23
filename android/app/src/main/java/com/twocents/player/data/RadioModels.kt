@@ -57,4 +57,5 @@ data class RadioSessionState(
     val isLoadingMore: Boolean = false,
     val lastAutoAppendRemainingCount: Int = -1,
     val consecutiveLowYieldCount: Int = 0,
+    val usedSeedIds: Set<String> = emptySet(),
 )

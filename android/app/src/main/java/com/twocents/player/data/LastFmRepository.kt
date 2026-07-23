@@ -1,6 +1,5 @@
 package com.twocents.player.data
 
-import android.util.Log
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -14,6 +13,7 @@ class LastFmRepository(
         .readTimeout(5, TimeUnit.SECONDS)
         .callTimeout(8, TimeUnit.SECONDS)
         .build(),
+    private val logger: RadioDiagnosticLogger = NoOpRadioDiagnosticLogger,
 ) : RadioCandidateSource {
 
     fun getSimilarTracks(
@@ -72,7 +72,7 @@ class LastFmRepository(
         val seenKeys = mutableSetOf<String>()
         var seedsQueried = 0
         val totalStart = System.currentTimeMillis()
-        Log.d(TAG, "Last.fm requestRadioCandidates: seeds=${seeds.size}, limit=${request.rawCandidateLimit}")
+        logger.debug("Last.fm requestRadioCandidates: seeds=${seeds.size}, limit=${request.rawCandidateLimit}")
 
         for (seed in shuffledSeeds) {
             if (allSuggestions.size >= request.rawCandidateLimit) break
@@ -88,7 +88,7 @@ class LastFmRepository(
                 )
             }.getOrDefault(emptyList())
             val seedMs = System.currentTimeMillis() - seedStart
-            Log.d(TAG, "  seed #$seedsQueried '${seed.title} - ${seed.artist}' → ${similarTracks.size} 条 (${seedMs}ms)")
+            logger.debug("  seed #$seedsQueried '${seed.title} - ${seed.artist}' → ${similarTracks.size} 条 (${seedMs}ms)")
 
             seedsQueried++
 
@@ -111,7 +111,7 @@ class LastFmRepository(
         }
 
         val totalMs = System.currentTimeMillis() - totalStart
-        Log.d(TAG, "Last.fm 总计: ${allSuggestions.size} 条候选, ${seedsQueried} 次查询, ${totalMs}ms")
+        logger.debug("Last.fm 总计: ${allSuggestions.size} 条候选, ${seedsQueried} 次查询, ${totalMs}ms")
         return allSuggestions
     }
 
@@ -153,7 +153,6 @@ class LastFmRepository(
     }
 
     private companion object {
-        private const val TAG = "RadioEngine"
         const val BASE_URL = "https://ws.audioscrobbler.com/2.0/"
         const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +

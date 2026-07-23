@@ -41,12 +41,33 @@ class RadioRecommendationPlannerTest {
         assertEquals(RadioBoundaryState.BALANCED, result.boundaryState)
         assertEquals(RadioWaveTargets(4, 2, 1), result.waveTargets)
         assertEquals(12, result.rawCandidateLimit)
-        assertEquals(30, result.favoriteSeeds.size)
-        assertEquals(favorites.take(30), result.favoriteSeeds)
+        assertEquals(3, result.favoriteSeeds.size)
+        assertEquals(favorites.take(3), result.favoriteSeeds)
         assertEquals(setOf("older-positive"), result.positiveTrackIds)
         assertEquals(setOf("older-negative", "skipped-1"), result.negativeTrackIds)
         assertEquals(setOf("queue-1", "played-1"), result.avoidTrackIds)
         assertEquals(setOf("artist-a", "artist-b"), result.avoidArtistKeys)
+    }
+
+    @Test
+    fun buildRequest_onlyAvoidsThreeMostRecentArtistsWithoutBanningOlderPositiveArtist() {
+        val planner = RadioRecommendationPlanner()
+        val result = planner.buildRequest(
+            favorites = listOf(track("fav-1", "Favorite Artist")),
+            history = RadioHistorySnapshot(
+                positiveArtistKeys = setOf("liked-older"),
+                recentArtistKeys = listOf(
+                    "newest-a",
+                    "newest-b",
+                    "newest-c",
+                    "liked-older",
+                    "oldest-d",
+                ),
+            ),
+            session = RadioSessionState(sessionId = 303L),
+        )
+
+        assertEquals(setOf("newest-a", "newest-b", "newest-c"), result.avoidArtistKeys)
     }
 
     @Test
@@ -79,6 +100,29 @@ class RadioRecommendationPlannerTest {
         assertEquals(RadioWaveTargets(5, 1, 0), result.waveTargets)
         assertEquals(setOf("history-positive", "session-favorited"), result.positiveTrackIds)
         assertEquals(setOf("history-negative", "session-skipped"), result.negativeTrackIds)
+    }
+
+    @Test
+    fun buildRequest_entersRecoveryForWeightedRecentFiveNegativeTrend() {
+        val planner = RadioRecommendationPlanner()
+        val history = RadioHistorySnapshot(
+            events = listOf(
+                feedbackEvent("recent-1", "artist-1", RadioFeedbackType.MILD_NEGATIVE, 100L),
+                feedbackEvent("recent-2", "artist-2", RadioFeedbackType.STRONG_NEGATIVE, 200L),
+                feedbackEvent("recent-3", "artist-3", RadioFeedbackType.MILD_NEGATIVE, 300L),
+                feedbackEvent("recent-4", "artist-4", RadioFeedbackType.STRONG_NEGATIVE, 400L),
+                feedbackEvent("recent-5", "artist-5", RadioFeedbackType.MILD_NEGATIVE, 500L),
+            ),
+        )
+
+        val result = planner.buildRequest(
+            favorites = emptyList(),
+            history = history,
+            session = RadioSessionState(sessionId = 404L),
+        )
+
+        assertEquals(RadioBoundaryState.RECOVERING, result.boundaryState)
+        assertEquals(RadioWaveTargets(5, 1, 0), result.waveTargets)
     }
 
     private fun feedbackEvent(

@@ -1,6 +1,5 @@
 package com.twocents.player.data
 
-import android.util.Log
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -20,6 +19,7 @@ class NeteaseSearchRepository(
         .readTimeout(10, TimeUnit.SECONDS)
         .callTimeout(15, TimeUnit.SECONDS)
         .build(),
+    private val logger: RadioDiagnosticLogger = NoOpRadioDiagnosticLogger,
 ) : MusicSourceRepository {
     override val source: TrackSource = TrackSource.NETEASE
 
@@ -245,7 +245,7 @@ class NeteaseSearchRepository(
         }.getOrDefault(emptyMap())
         val officialMs = System.currentTimeMillis() - officialStart
         val officialResolved = officialPlaybackDetails.count { !it.value.isPreviewOnly }
-        Log.d(TAG, "    Netease官方: ${officialResolved}/${trackIds.size} 完整, ${officialPlaybackDetails.size - officialResolved} 试听 (${officialMs}ms)")
+        logger.debug("    Netease官方: ${officialResolved}/${trackIds.size} 完整, ${officialPlaybackDetails.size - officialResolved} 试听 (${officialMs}ms)")
 
         val fallbackTrackIds = trackIds.filter { trackId ->
             val details = officialPlaybackDetails[trackId]
@@ -256,7 +256,7 @@ class NeteaseSearchRepository(
         val fallbackStart = System.currentTimeMillis()
         val fallbackPlaybackDetails = resolveThirdPartyPlaybackDetails(fallbackTrackIds)
         val fallbackMs = System.currentTimeMillis() - fallbackStart
-        Log.d(TAG, "    Netease第三方: ${fallbackPlaybackDetails.size}/${fallbackTrackIds.size} 成功 (${fallbackMs}ms)")
+        logger.debug("    Netease第三方: ${fallbackPlaybackDetails.size}/${fallbackTrackIds.size} 成功 (${fallbackMs}ms)")
 
         return buildMap(trackIds.size) {
             trackIds.forEach { trackId ->
@@ -492,7 +492,6 @@ class NeteaseSearchRepository(
     }
 
     private companion object {
-        const val TAG = "RadioEngine"
         const val MATCH_LIMIT = 8
         const val OFFICIAL_PLAYBACK_LEVEL = "standard"
         const val OFFICIAL_PLAYBACK_URL = "https://interface3.music.163.com/eapi/song/enhance/player/url/v1"

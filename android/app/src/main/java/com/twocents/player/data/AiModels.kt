@@ -44,6 +44,8 @@ data class AiSuggestedTrack(
     val reason: String = "",
     val bucket: RadioCandidateBucket = RadioCandidateBucket.SAFE,
     val resolvedTrack: Track? = null,
+    val matchedSeedIds: Set<String> = emptySet(),
+    val retrievalSources: Set<String> = emptySet(),
 )
 
 data class AiRecommendedTrack(

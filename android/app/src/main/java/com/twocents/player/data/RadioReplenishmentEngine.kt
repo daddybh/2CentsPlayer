@@ -1,6 +1,5 @@
 package com.twocents.player.data
 
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -18,6 +17,8 @@ class RadioReplenishmentEngine(
     private val fastCandidateSource: RadioCandidateSource? = null,
     private val planner: RadioRecommendationPlanner = RadioRecommendationPlanner(),
     private val composer: RadioQueueComposer = RadioQueueComposer(),
+    private val scorer: RadioCandidateScorer = RadioCandidateScorer(),
+    private val logger: RadioDiagnosticLogger = NoOpRadioDiagnosticLogger,
 ) {
     suspend fun replenish(
         settings: AiServiceConfig,
@@ -28,21 +29,21 @@ class RadioReplenishmentEngine(
         requestTransform: (RadioRecommendationRequest) -> RadioRecommendationRequest = { it },
     ): RadioReplenishmentResult {
         val replenishStart = System.currentTimeMillis()
-        Log.d(TAG, "═══ replenish START ═══ minAppend=$minimumRequiredAppend, hasLastFm=${settings.hasLastFm}, hasAi=${settings.isComplete}")
+        logger.debug("═══ replenish START ═══ minAppend=$minimumRequiredAppend, hasFastSource=${fastCandidateSource != null}, hasAi=${settings.isComplete}")
         var attempts = 0
+        var aiRequestCount = 0
         var workingSession = session
         var suggestionCount = 0
         var appended = emptyList<RadioResolvedCandidate>()
-        var forceRecoveringRetry = false
 
         while (attempts < MAX_ATTEMPTS && appended.size < minimumRequiredAppend) {
             val attemptStart = System.currentTimeMillis()
-            Log.d(TAG, "--- attempt #$attempts START ---")
+            logger.debug("--- attempt #$attempts START ---")
             val planningSession = workingSession.copy(
                 queuedRecommendations = workingSession.queuedRecommendations + appended.map { it.recommendation },
             )
             val plannedRequest = planner.buildRequest(favorites, history, planningSession)
-            val request = if (forceRecoveringRetry) {
+            val request = if (attempts > 0) {
                 plannedRequest.copy(
                     boundaryState = RadioBoundaryState.RECOVERING,
                     waveTargets = RadioWaveTargets(5, 1, 0),
@@ -53,50 +54,60 @@ class RadioReplenishmentEngine(
             workingSession = workingSession.copy(
                 boundaryState = request.boundaryState,
                 statusLabel = request.boundaryState.statusLabel(),
+                usedSeedIds = workingSession.usedSeedIds + request.favoriteSeeds.map(Track::id),
+            )
+            logger.debug(
+                "  [种子] " + request.favoriteSeeds.joinToString(" | ") { seed ->
+                    "${seed.title} - ${seed.artist} (${seed.id})"
+                }.ifBlank { "无可用种子" },
             )
 
             val useFastSource = attempts == 0
-                && !forceRecoveringRetry
                 && fastCandidateSource != null
-                && settings.hasLastFm
 
             val candidateStart = System.currentTimeMillis()
             val suggestions = if (useFastSource) {
-                Log.d(TAG, "  [候选] 尝试 Last.fm 快速源...")
+                logger.debug("  [候选] 尝试快速源...")
                 val fastStart = System.currentTimeMillis()
                 val fastResult = runCatching {
                     fastCandidateSource!!.requestRadioCandidates(settings, request)
                 }.getOrDefault(emptyList())
                 val fastMs = System.currentTimeMillis() - fastStart
-                Log.d(TAG, "  [候选] Last.fm 返回 ${fastResult.size} 条 (${fastMs}ms)")
-                if (fastResult.isEmpty()) {
-                    Log.d(TAG, "  [候选] Last.fm 无结果，fallback 到 AI...")
+                logger.debug("  [候选] 快速源返回 ${fastResult.size} 条 (${fastMs}ms)")
+                if (fastResult.isEmpty() && settings.isComplete) {
+                    logger.debug("  [候选] 快速源无结果，fallback 到 AI...")
                     val aiStart = System.currentTimeMillis()
+                    aiRequestCount += 1
                     val aiResult = runCatching {
                         candidateSource.requestRadioCandidates(settings, request)
                     }.getOrDefault(emptyList())
                     val aiMs = System.currentTimeMillis() - aiStart
-                    Log.d(TAG, "  [候选] AI fallback 返回 ${aiResult.size} 条 (${aiMs}ms)")
+                    logger.debug("  [候选] AI fallback 返回 ${aiResult.size} 条 (${aiMs}ms)")
                     aiResult
                 } else {
                     fastResult
                 }
+            } else if (!settings.isComplete || aiRequestCount >= MAX_AI_REQUESTS_PER_REPLENISH) {
+                emptyList()
             } else {
-                Log.d(TAG, "  [候选] 使用 AI 源 (attempt=$attempts)...")
+                logger.debug("  [候选] 使用 AI 源 (attempt=$attempts)...")
                 val aiStart = System.currentTimeMillis()
-                val result = candidateSource.requestRadioCandidates(settings, request)
+                aiRequestCount += 1
+                val result = runCatching {
+                    candidateSource.requestRadioCandidates(settings, request)
+                }.getOrDefault(emptyList())
                 val aiMs = System.currentTimeMillis() - aiStart
-                Log.d(TAG, "  [候选] AI 源返回 ${result.size} 条 (${aiMs}ms)")
+                logger.debug("  [候选] AI 源返回 ${result.size} 条 (${aiMs}ms)")
                 result
             }
             val candidateMs = System.currentTimeMillis() - candidateStart
-            Log.d(TAG, "  [候选] 总耗时 ${candidateMs}ms, 共 ${suggestions.size} 条建议")
+            logger.debug("  [候选] 总耗时 ${candidateMs}ms, 共 ${suggestions.size} 条建议")
             suggestionCount += suggestions.size
 
             val existingQueue = workingSession.queuedRecommendations + appended.map { it.recommendation }
             val resolveStart = System.currentTimeMillis()
             val newlyAppended = if (minimumRequiredAppend <= 1) {
-                Log.d(TAG, "  [解析] 快速启动模式 (min=1)")
+                logger.debug("  [解析] 快速启动模式 (min=1)")
                 resolveFastStartCandidates(
                     suggestions = suggestions,
                     request = request,
@@ -104,7 +115,7 @@ class RadioReplenishmentEngine(
                     boundaryState = workingSession.boundaryState,
                 )
             } else {
-                Log.d(TAG, "  [解析] 批量匹配模式 (${suggestions.size} 条)")
+                logger.debug("  [解析] 批量匹配模式 (${suggestions.size} 条)")
                 val matchStart = System.currentTimeMillis()
                 val matchedCandidates = coroutineScope {
                     suggestions.map { suggestion ->
@@ -120,41 +131,62 @@ class RadioReplenishmentEngine(
                                     reason = suggestion.reason,
                                 ),
                                 bucket = suggestion.bucket,
+                                matchedSeedIds = suggestion.matchedSeedIds,
+                                retrievalSources = suggestion.retrievalSources,
                             )
                         }
                     }.awaitAll().filterNotNull()
-                }.filterNot { candidate ->
-                    candidate.recommendation.track.isLocallyExcluded(request)
                 }
                 val matchMs = System.currentTimeMillis() - matchStart
-                Log.d(TAG, "  [解析] 匹配到 ${matchedCandidates.size} 首 (${matchMs}ms), 跳过播放地址解析（延迟到播放时）")
+                logger.debug("  [解析] 匹配到 ${matchedCandidates.size} 首 (${matchMs}ms), 跳过播放地址解析（延迟到播放时）")
 
                 composer.compose(
                     existingQueue = existingQueue,
-                    candidates = matchedCandidates,
+                    candidates = scorer.score(matchedCandidates, request),
                     boundaryState = workingSession.boundaryState,
                 )
             }
             val resolveMs = System.currentTimeMillis() - resolveStart
             val attemptMs = System.currentTimeMillis() - attemptStart
-            Log.d(TAG, "--- attempt #$attempts END --- 新增 ${newlyAppended.size} 首, 解析 ${resolveMs}ms, 本轮总计 ${attemptMs}ms")
-            appended = appended + newlyAppended
+            logger.debug("--- attempt #$attempts END --- 新增 ${newlyAppended.size} 首, 解析 ${resolveMs}ms, 本轮总计 ${attemptMs}ms")
+            val neededCount = (minimumRequiredAppend - appended.size).coerceAtLeast(0)
+            val accepted = newlyAppended.take(neededCount)
+            accepted.forEach { candidate ->
+                val seedLabels = request.favoriteSeeds
+                    .filter { it.id in candidate.matchedSeedIds }
+                    .joinToString("/") { it.title }
+                    .ifBlank { "-" }
+                logger.debug(
+                    "  [入队] ${candidate.recommendation.track.title} - " +
+                        "${candidate.recommendation.track.artist} | " +
+                        "score=${candidate.score}, bucket=${candidate.bucket}, " +
+                        "seeds=$seedLabels, " +
+                        "sources=${candidate.retrievalSources.joinToString("/").ifBlank { "-" }}",
+                )
+            }
+            appended = appended + accepted
 
             if (appended.size >= minimumRequiredAppend) {
                 break
             }
 
+            val canTryAnotherSource = settings.isComplete &&
+                aiRequestCount < MAX_AI_REQUESTS_PER_REPLENISH &&
+                useFastSource &&
+                suggestions.isNotEmpty()
             workingSession = workingSession.copy(
                 boundaryState = RadioBoundaryState.RECOVERING,
                 statusLabel = RadioBoundaryState.RECOVERING.statusLabel(),
                 consecutiveLowYieldCount = workingSession.consecutiveLowYieldCount + 1,
             )
-            forceRecoveringRetry = true
+            if (!canTryAnotherSource) {
+                break
+            }
             attempts += 1
         }
 
         val totalMs = System.currentTimeMillis() - replenishStart
-        Log.d(TAG, "═══ replenish END ═══ appended=${appended.size}, suggestions=$suggestionCount, attempts=${attempts+1}, 总耗时 ${totalMs}ms")
+        logger.debug("═══ replenish END ═══ appended=${appended.size}, suggestions=$suggestionCount, attempts=${attempts+1}, aiRequests=$aiRequestCount, 总耗时 ${totalMs}ms")
 
         val nextQueue = workingSession.queuedRecommendations + appended.map { it.recommendation }
 
@@ -183,21 +215,6 @@ class RadioReplenishmentEngine(
         }
     }
 
-    private fun Track.isLocallyExcluded(request: RadioRecommendationRequest): Boolean {
-        return id in request.negativeTrackIds ||
-            id in request.avoidTrackIds ||
-            radioArtistKey() in request.avoidArtistKeys
-    }
-
-    private fun Track.radioArtistKey(): String {
-        return artist
-            .split(',', '、', '/', '&')
-            .firstOrNull()
-            .orEmpty()
-            .trim()
-            .lowercase()
-    }
-
     private suspend fun resolveFastStartCandidates(
         suggestions: List<AiSuggestedTrack>,
         request: RadioRecommendationRequest,
@@ -216,16 +233,18 @@ class RadioReplenishmentEngine(
                     reason = suggestion.reason,
                 ),
                 bucket = suggestion.bucket,
+                matchedSeedIds = suggestion.matchedSeedIds,
+                retrievalSources = suggestion.retrievalSources,
             )
-            if (candidate.recommendation.track.isLocallyExcluded(request)) continue
+            val scoredCandidate = scorer.score(listOf(candidate), request).firstOrNull() ?: continue
 
             val appended = composer.compose(
                 existingQueue = existingQueue,
-                candidates = listOf(candidate),
+                candidates = listOf(scoredCandidate),
                 boundaryState = boundaryState,
             )
             if (appended.isNotEmpty()) {
-                Log.d(TAG, "  [快速启动] 找到候选: ${matchedTrack.title} - ${matchedTrack.artist}, hasUrl=${matchedTrack.audioUrl.isNotBlank()}")
+                logger.debug("  [快速启动] 找到候选: ${matchedTrack.title} - ${matchedTrack.artist}, hasUrl=${matchedTrack.audioUrl.isNotBlank()}")
                 return appended
             }
         }
@@ -234,8 +253,8 @@ class RadioReplenishmentEngine(
     }
 
     companion object {
-        private const val TAG = "RadioEngine"
         const val MAX_ATTEMPTS: Int = 3
+        const val MAX_AI_REQUESTS_PER_REPLENISH: Int = 1
         const val MIN_SAFE_APPEND: Int = 4
     }
 }

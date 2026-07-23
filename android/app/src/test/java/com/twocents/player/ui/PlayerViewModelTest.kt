@@ -4,12 +4,16 @@ import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import com.twocents.player.data.AiRecommendedTrack
+import com.twocents.player.data.AiSuggestedTrack
 import com.twocents.player.data.MusicSearchPage
 import com.twocents.player.data.MusicSourceRepository
 import com.twocents.player.data.MusicLibraryRepository
+import com.twocents.player.data.RadioCandidateSource
 import com.twocents.player.data.RadioFeedbackType
 import com.twocents.player.data.RadioHistoryStore
+import com.twocents.player.data.RadioReplenishmentEngine
 import com.twocents.player.data.RadioSessionState
+import com.twocents.player.data.RadioSessionStore
 import com.twocents.player.data.Track
 import com.twocents.player.data.TrackSource
 import com.twocents.player.data.sourceTrackId
@@ -90,6 +94,10 @@ class PlayerViewModelTest {
         )
         viewModel.setPrivateField("radioSession", radioSession(queue))
         viewModel.applyPlaybackSource("AI")
+        val sessionStore = RadioSessionStore(application)
+        sessionStore.saveRecommendations(
+            queue.map { AiRecommendedTrack(track = it, reason = "test") },
+        )
 
         viewModel.invokePrivate("recordCurrentAiTrackSkipped")
         viewModel.onPlayerQueueChanged(
@@ -109,6 +117,10 @@ class PlayerViewModelTest {
         assertEquals(RadioFeedbackType.MILD_NEGATIVE, eventsForSkippedTrack.single().type)
         assertTrue(history.negativeTrackIds.contains(skippedTrack.id))
         assertFalse(history.positiveTrackIds.contains(skippedTrack.id))
+        assertEquals(
+            listOf(nextTrack.id),
+            sessionStore.loadRecommendations().map { it.track.id },
+        )
     }
 
     @Test
@@ -161,6 +173,133 @@ class PlayerViewModelTest {
             ),
             neteaseSource.resolveCalls,
         )
+    }
+
+    @Test
+    fun prepareTrackForPlayback_radioFallsForwardWhenRequestedTrackIsUnavailable() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val neteaseSource = RecordingMusicSourceRepository(
+            source = TrackSource.NETEASE,
+            unplayableTrackIds = setOf("netease:blocked"),
+        )
+        viewModel.setPrivateField(
+            "musicLibraryRepository",
+            MusicLibraryRepository(
+                neteaseRepository = neteaseSource,
+                kuwoRepository = RecordingMusicSourceRepository(source = TrackSource.KUWO),
+            ),
+        )
+        val queue = listOf(
+            unresolvedTrack("blocked").copy(
+                album = "Blocked Album",
+                coverUrl = "https://cover.example/blocked.jpg",
+            ),
+            unresolvedTrack("playable-next").copy(
+                album = "Next Album",
+                coverUrl = "https://cover.example/playable-next.jpg",
+            ),
+        )
+
+        viewModel.invokePrepareTrackForPlayback(
+            queue = queue,
+            index = 0,
+            playWhenReady = true,
+            startPositionMs = 0L,
+            sourceName = "AI",
+        )
+        advanceUntilIdle()
+        var attempts = 0
+        while (
+            (
+                viewModel.playbackState.currentTrack?.id != "netease:playable-next" ||
+                    viewModel.playbackState.currentTrack?.audioUrl.isNullOrBlank()
+            ) &&
+            attempts < 50
+        ) {
+            advanceUntilIdle()
+            Thread.sleep(20L)
+            attempts += 1
+        }
+
+        assertEquals("netease:playable-next", viewModel.playbackState.currentTrack?.id)
+        assertTrue(viewModel.playbackState.currentTrack?.audioUrl?.isNotBlank() == true)
+        val command = viewModel.pendingPlayerCommand as PlayerCommand.LoadTrack
+        assertEquals(1, command.index)
+    }
+
+    @Test
+    fun queueMoreRadioRecommendations_resolvesFirstAppendedTrackBeforeAdvancing() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val neteaseSource = RecordingMusicSourceRepository(source = TrackSource.NETEASE)
+        val library = MusicLibraryRepository(
+            neteaseRepository = neteaseSource,
+            kuwoRepository = RecordingMusicSourceRepository(source = TrackSource.KUWO),
+        )
+        val appendedTrack = unresolvedTrack("appended").copy(
+            album = "Appended Album",
+            coverUrl = "https://cover.example/appended.jpg",
+        )
+        val fastSource = object : RadioCandidateSource {
+            override fun requestRadioCandidates(
+                settings: com.twocents.player.data.AiServiceConfig,
+                request: com.twocents.player.data.RadioRecommendationRequest,
+            ): List<AiSuggestedTrack> {
+                return listOf(
+                    AiSuggestedTrack(
+                        title = appendedTrack.title,
+                        artist = appendedTrack.artist,
+                        resolvedTrack = appendedTrack,
+                    ),
+                )
+            }
+        }
+        viewModel.setPrivateField("musicLibraryRepository", library)
+        viewModel.setPrivateField(
+            "radioEngine",
+            RadioReplenishmentEngine(
+                candidateSource = object : RadioCandidateSource {
+                    override fun requestRadioCandidates(
+                        settings: com.twocents.player.data.AiServiceConfig,
+                        request: com.twocents.player.data.RadioRecommendationRequest,
+                    ): List<AiSuggestedTrack> = emptyList()
+                },
+                fastCandidateSource = fastSource,
+                trackLookup = library,
+            ),
+        )
+        val current = track("current", "Current")
+        viewModel.onPlayerQueueChanged(
+            queue = listOf(current),
+            currentIndex = 0,
+            positionMs = 30_000L,
+            durationMs = current.durationMs,
+            isPlaying = true,
+        )
+        viewModel.setPrivateFavoritesState(FavoritesUiState(tracks = listOf(track("seed", "Seed"))))
+        viewModel.setPrivateField("radioSession", radioSession(listOf(current)))
+        viewModel.applyPlaybackSource("AI")
+
+        viewModel.invokeQueueMoreRecommendations(force = true, advanceToFirstNewTrack = true)
+        advanceUntilIdle()
+        var attempts = 0
+        while (
+            (
+                viewModel.playbackState.currentTrack?.id != "netease:appended" ||
+                    viewModel.playbackState.currentTrack?.audioUrl.isNullOrBlank()
+            ) &&
+            attempts < 50
+        ) {
+            advanceUntilIdle()
+            Thread.sleep(20L)
+            attempts += 1
+        }
+
+        assertEquals("netease:appended", viewModel.playbackState.currentTrack?.id)
+        assertTrue(viewModel.playbackState.currentTrack?.audioUrl?.isNotBlank() == true)
     }
 
     @Test
@@ -379,6 +518,12 @@ class PlayerViewModelTest {
         method.invoke(this, state)
     }
 
+    private fun PlayerViewModel.setPrivateFavoritesState(state: FavoritesUiState) {
+        val method = PlayerViewModel::class.java.getDeclaredMethod("setFavoritesState", FavoritesUiState::class.java)
+        method.isAccessible = true
+        method.invoke(this, state)
+    }
+
     private fun PlayerViewModel.getPrivateField(name: String): Any? {
         val field = PlayerViewModel::class.java.getDeclaredField(name)
         field.isAccessible = true
@@ -411,6 +556,19 @@ class PlayerViewModelTest {
         method.invoke(this, queue, index, playWhenReady, startPositionMs, enumValue)
     }
 
+    private fun PlayerViewModel.invokeQueueMoreRecommendations(
+        force: Boolean,
+        advanceToFirstNewTrack: Boolean,
+    ) {
+        val method = PlayerViewModel::class.java.getDeclaredMethod(
+            "queueMoreAiRecommendations",
+            Boolean::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+        )
+        method.isAccessible = true
+        method.invoke(this, force, advanceToFirstNewTrack)
+    }
+
     private class FakeApplication : Application() {
         private val preferencesByName = mutableMapOf<String, SharedPreferences>()
 
@@ -427,6 +585,7 @@ class PlayerViewModelTest {
         override val source: TrackSource,
         private val bestMatch: Track? = null,
         private val searchResults: List<Track> = emptyList(),
+        private val unplayableTrackIds: Set<String> = emptySet(),
     ) : MusicSourceRepository {
         val resolveCalls = mutableListOf<List<String>>()
 
@@ -446,7 +605,11 @@ class PlayerViewModelTest {
         override fun resolvePlayableTracks(tracks: List<Track>): List<Track> {
             resolveCalls += tracks.map { it.id }
             return tracks.map { track ->
-                track.copy(audioUrl = "https://audio.example/${track.sourceTrackId()}.mp3")
+                if (track.id in unplayableTrackIds) {
+                    track.copy(audioUrl = "")
+                } else {
+                    track.copy(audioUrl = "https://audio.example/${track.sourceTrackId()}.mp3")
+                }
             }
         }
     }
