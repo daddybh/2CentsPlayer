@@ -104,6 +104,7 @@ class PlayerViewModel(
     private var latestLyricsRequestId = 0L
     private var latestTrackMetadataRequestId = 0L
     private var latestAiSessionId = 0L
+    private var latestFeedbackNoticeId = 0L
 
     private var activePlaybackSource = PlaybackSource.REGULAR
     private var radioSession: RadioSessionState? = null
@@ -157,8 +158,6 @@ class PlayerViewModel(
                 activePlaybackSource = PlaybackSource.AI
                 aiRecommendationState = aiRecommendationState.copy(isActive = true)
                 refreshAiRecommendations(playAfterRefresh = true)
-            } else {
-                refreshAiRecommendations()
             }
         }
     }
@@ -178,9 +177,10 @@ class PlayerViewModel(
             return
         }
 
-        val shouldPlay = !playbackState.isPlaying
+        val shouldPlay = !playbackState.playWhenReady
         playbackState = playbackState.copy(
             isPlaying = shouldPlay,
+            playWhenReady = shouldPlay,
             statusMessage = null,
         )
         emitPlayerCommand(PlayerCommand.SetPlayWhenReady(nextPlayerCommandId(), shouldPlay))
@@ -344,7 +344,7 @@ class PlayerViewModel(
             radioSessionStore.setRadioActive(false)
             unwindRadioPlaybackToRegularQueue(
                 track = playbackState.currentTrack,
-                playWhenReady = playbackState.isPlaying,
+                playWhenReady = playbackState.playWhenReady,
                 startPositionMs = playbackState.currentPositionMs,
             )
         } else {
@@ -356,6 +356,47 @@ class PlayerViewModel(
     fun playAiRecommendations() {
         if (aiRecommendationState.isLoading) return
         refreshAiRecommendations(playAfterRefresh = true)
+    }
+
+    fun dislikeCurrentRadioTrack() {
+        if (activePlaybackSource != PlaybackSource.AI) return
+        val currentTrack = playbackState.currentTrack ?: return
+        val session = radioSession ?: return
+        if (currentTrack.id.isBlank() || currentTrack.id in session.skippedTrackIds) return
+
+        recordCurrentAiTrackSkipped()
+        aiRecommendationState = aiRecommendationState.copy(
+            feedbackNotice = AiFeedbackNotice(
+                id = ++latestFeedbackNoticeId,
+                trackId = currentTrack.id,
+                message = "已减少类似歌曲推荐",
+            ),
+        )
+        skipNext()
+    }
+
+    fun undoLastRadioDislike(trackId: String) {
+        val notice = aiRecommendationState.feedbackNotice ?: return
+        if (trackId.isBlank() || notice.trackId != trackId) return
+
+        val session = radioSession
+        if (radioHistoryStore.removeLatestNegativeEvent(trackId) && session != null) {
+            val updatedSession = session.copy(
+                skippedTrackIds = session.skippedTrackIds - trackId,
+            )
+            radioSession = updatedSession
+            persistRadioRecommendations(updatedSession.queuedRecommendations)
+            aiRecommendationState = aiRecommendationState.copy(
+                skippedCount = updatedSession.skippedTrackIds.size,
+                feedbackNotice = null,
+            )
+        } else {
+            clearRadioFeedbackNotice()
+        }
+    }
+
+    fun clearRadioFeedbackNotice() {
+        aiRecommendationState = aiRecommendationState.copy(feedbackNotice = null)
     }
 
     fun refreshAiRecommendations(playAfterRefresh: Boolean = false) {
@@ -371,11 +412,10 @@ class PlayerViewModel(
         if (favorites.isEmpty()) {
             aiRecommendationState = aiRecommendationState.copy(
                 isLoading = false,
-                errorMessage = "请先收藏一些歌曲再使用探索电台。",
+                errorMessage = "先收藏几首喜欢的歌，再开始探索电台。",
+                statusLabel = "需要收藏作为推荐种子",
+                isDegraded = true,
             )
-            if (playAfterRefresh) {
-                openAiSettings()
-            }
             return
         }
 
@@ -742,6 +782,8 @@ class PlayerViewModel(
         positionMs: Long,
         durationMs: Long,
         isPlaying: Boolean,
+        playWhenReady: Boolean = isPlaying,
+        isPreparing: Boolean = false,
     ) {
         val previousTrack = playbackState.currentTrack
         val previousPositionMs = playbackState.currentPositionMs
@@ -757,6 +799,7 @@ class PlayerViewModel(
             }
             playbackState = playbackState.copy(
                 isPlaying = false,
+                playWhenReady = false,
                 isPreparing = false,
                 currentPositionMs = positionMs.coerceAtLeast(0L),
             )
@@ -795,7 +838,8 @@ class PlayerViewModel(
             currentIndex = safeIndex,
             currentPositionMs = positionMs.coerceAtLeast(0L),
             isPlaying = isPlaying,
-            isPreparing = false,
+            playWhenReady = playWhenReady,
+            isPreparing = isPreparing,
             statusMessage = null,
         )
 
@@ -824,6 +868,7 @@ class PlayerViewModel(
             currentTrack = clearedCurrentTrack,
             playlist = clearedPlaylist,
             isPlaying = false,
+            playWhenReady = false,
             isPreparing = false,
             statusMessage = message ?: "播放失败，请换一首歌试试。",
         )
@@ -869,6 +914,7 @@ class PlayerViewModel(
             currentIndex = index,
             currentPositionMs = startPositionMs,
             isPlaying = false,
+            playWhenReady = playWhenReady,
             isPreparing = true,
             statusMessage = "正在准备播放 ${targetTrack.title}...",
         )
@@ -900,6 +946,7 @@ class PlayerViewModel(
                         currentIndex = index,
                         currentPositionMs = 0L,
                         isPlaying = false,
+                        playWhenReady = false,
                         isPreparing = false,
                         statusMessage = "这首歌当前没有可用音频地址，换一首试试。",
                     )
@@ -952,7 +999,7 @@ class PlayerViewModel(
                         commitPlayableQueue(
                             queue = mergedQueue.map(::normalizeTrack),
                             index = playbackState.currentIndex.coerceIn(0, mergedQueue.lastIndex),
-                            playWhenReady = playbackState.isPlaying,
+                            playWhenReady = playbackState.playWhenReady,
                             startPositionMs = playbackState.currentPositionMs,
                             source = source,
                         )
@@ -976,6 +1023,7 @@ class PlayerViewModel(
                     currentIndex = index,
                     currentPositionMs = 0L,
                     isPlaying = false,
+                    playWhenReady = false,
                     isPreparing = false,
                     statusMessage = it.message ?: "播放准备失败，请稍后重试。",
                 )
@@ -1019,6 +1067,7 @@ class PlayerViewModel(
             currentIndex = index,
             currentPositionMs = startPositionMs,
             isPlaying = playWhenReady,
+            playWhenReady = playWhenReady,
             isPreparing = false,
             statusMessage = null,
         )
@@ -1204,7 +1253,7 @@ class PlayerViewModel(
                     commitPlayableQueue(
                         queue = updatedQueue,
                         index = targetIndex,
-                        playWhenReady = playbackState.isPlaying,
+                        playWhenReady = playbackState.playWhenReady,
                         startPositionMs = playbackState.currentPositionMs,
                         source = PlaybackSource.AI,
                     )

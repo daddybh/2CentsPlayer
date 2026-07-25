@@ -56,6 +56,24 @@ class RadioHistoryStore(
         persistEvents(retainedEvents)
     }
 
+    fun removeLatestNegativeEvent(trackId: String): Boolean {
+        if (trackId.isBlank()) return false
+
+        val events = readEvents().toMutableList()
+        val eventIndex = events.indexOfLast { event ->
+            event.trackId == trackId &&
+                event.type in setOf(
+                    RadioFeedbackType.MILD_NEGATIVE,
+                    RadioFeedbackType.STRONG_NEGATIVE,
+                )
+        }
+        if (eventIndex < 0) return false
+
+        events.removeAt(eventIndex)
+        persistEvents(pruneAndBound(events, clock()))
+        return true
+    }
+
     private fun readEvents(): List<RadioFeedbackEvent> {
         val raw = preferences.getString(KEY_EVENTS, null) ?: return emptyList()
         val jsonArray = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()

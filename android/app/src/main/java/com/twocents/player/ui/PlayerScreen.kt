@@ -34,10 +34,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
@@ -54,6 +56,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -62,11 +65,15 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.ThumbDown
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -78,15 +85,19 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -102,8 +113,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -145,6 +161,16 @@ fun PlayerApp(
     val aiRecommendationState = viewModel.aiRecommendationState
     val isSearchPageVisible = viewModel.isSearchPageVisible
     val currentTrack = playbackState.currentTrack
+    val snackbarHostState = remember { SnackbarHostState() }
+    val currentRecommendationReason = remember(
+        currentTrack?.id,
+        aiRecommendationState.tracks,
+    ) {
+        aiRecommendationState.tracks
+            .firstOrNull { recommendation -> recommendation.track.id == currentTrack?.id }
+            ?.reason
+            ?.toDisplayRecommendationReason()
+    }
     val orderedQueue = remember(playbackState.playlist, playbackState.currentIndex) {
         buildOrderedQueue(
             playlist = playbackState.playlist,
@@ -153,6 +179,21 @@ fun PlayerApp(
     }
 
     BindPlayer(viewModel)
+
+    LaunchedEffect(aiRecommendationState.feedbackNotice?.id) {
+        val notice = aiRecommendationState.feedbackNotice ?: return@LaunchedEffect
+        val result = snackbarHostState.showSnackbar(
+            message = notice.message,
+            actionLabel = "撤销",
+            withDismissAction = true,
+            duration = SnackbarDuration.Short,
+        )
+        if (result == SnackbarResult.ActionPerformed) {
+            viewModel.undoLastRadioDislike(notice.trackId)
+        } else {
+            viewModel.clearRadioFeedbackNotice()
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -202,13 +243,21 @@ fun PlayerApp(
                 isHeartModeLoading = aiRecommendationState.isLoading || aiRecommendationState.isLoadingMore,
                 heartModeStatusLabel = aiRecommendationState.statusLabel,
                 isHeartModeDegraded = aiRecommendationState.isDegraded,
+                heartModeErrorMessage = aiRecommendationState.errorMessage,
+                hasFavorites = favoritesState.tracks.isNotEmpty(),
+                recommendationReason = currentRecommendationReason,
                 onSeek = viewModel::seekTo,
                 onPlayPause = viewModel::togglePlayPause,
                 onSkipNext = viewModel::skipNext,
                 onSkipPrevious = viewModel::skipPrevious,
                 onOpenLyrics = viewModel::openLyricsScreen,
                 onToggleFavorite = viewModel::toggleFavorite,
-                onToggleHeartMode = viewModel::toggleHeartMode,
+                onToggleHeartMode = if (favoritesState.tracks.isEmpty()) {
+                    viewModel::openSearch
+                } else {
+                    viewModel::toggleHeartMode
+                },
+                onDislikeRecommendation = viewModel::dislikeCurrentRadioTrack,
             )
 
             QueueSection(
@@ -218,6 +267,14 @@ fun PlayerApp(
                 onSelectTrack = viewModel::selectPlaylistTrack,
             )
         }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(20.dp),
+        )
     }
 
     if (aiSettingsState.isVisible) {
@@ -237,7 +294,6 @@ fun PlayerApp(
                 onEndpointChange = viewModel::updateAiEndpoint,
                 onModelChange = viewModel::updateAiModel,
                 onAccessKeyChange = viewModel::updateAiAccessKey,
-                onLastFmApiKeyChange = viewModel::updateLastFmApiKey,
                 onSave = viewModel::saveAiSettings,
                 onClose = viewModel::closeAiSettings,
             )
@@ -704,7 +760,11 @@ private fun LyricsBottomControls(
             ) {
                 CompactTransportButton(
                     icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                    contentDescription = "收藏当前歌曲",
+                    contentDescription = if (isFavorite) {
+                        "取消收藏当前歌曲"
+                    } else {
+                        "收藏当前歌曲"
+                    },
                     onClick = onToggleFavorite,
                 )
 
@@ -854,6 +914,7 @@ private fun PlayerHeader(
                 icon = Icons.Default.Favorite,
                 label = favoriteCount.toString(),
                 onClick = onOpenFavorites,
+                onClickLabel = "打开收藏列表",
             )
             HeaderActionButton(
                 icon = Icons.Default.Settings,
@@ -914,6 +975,9 @@ private fun HeroArtwork(
     isHeartModeLoading: Boolean,
     heartModeStatusLabel: String?,
     isHeartModeDegraded: Boolean,
+    heartModeErrorMessage: String?,
+    hasFavorites: Boolean,
+    recommendationReason: String?,
     onSeek: (Long) -> Unit,
     onPlayPause: () -> Unit,
     onSkipNext: () -> Unit,
@@ -921,6 +985,7 @@ private fun HeroArtwork(
     onOpenLyrics: () -> Unit,
     onToggleFavorite: () -> Unit,
     onToggleHeartMode: () -> Unit,
+    onDislikeRecommendation: () -> Unit,
 ) {
     val motionEnabled = rememberMotionEnabled()
     val rotationTransition = rememberInfiniteTransition(label = "hero_disc")
@@ -964,7 +1029,11 @@ private fun HeroArtwork(
                     .fillMaxWidth()
                     .align(Alignment.CenterStart)
                     .padding(top = 20.dp, end = 14.dp)
-                    .clickable(onClick = onOpenLyrics)
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = "打开歌词",
+                        onClick = onOpenLyrics,
+                    )
                     .shadow(24.dp, HeroShape)
                     .clip(HeroShape)
                     .background(
@@ -1004,7 +1073,7 @@ private fun HeroArtwork(
                         )
 
                         Surface(
-                            modifier = Modifier.size(42.dp),
+                            modifier = Modifier.size(48.dp),
                             shape = CircleShape,
                             color = Color.Black.copy(alpha = 0.18f),
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
@@ -1012,12 +1081,19 @@ private fun HeroArtwork(
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .clickable(onClick = onToggleFavorite),
+                                    .clickable(
+                                        role = Role.Button,
+                                        onClick = onToggleFavorite,
+                                    ),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Icon(
                                     imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                    contentDescription = "收藏当前歌曲",
+                                    contentDescription = if (isFavorite) {
+                                        "取消收藏当前歌曲"
+                                    } else {
+                                        "收藏当前歌曲"
+                                    },
                                     tint = favoriteTint,
                                 )
                             }
@@ -1048,8 +1124,10 @@ private fun HeroArtwork(
                         }
 
                         Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(136.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Text(
                                 text = "NOW SPINNING",
@@ -1061,7 +1139,7 @@ private fun HeroArtwork(
                                 text = title,
                                 style = MaterialTheme.typography.headlineMedium,
                                 color = TextPrimary,
-                                maxLines = 2,
+                                maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
 
@@ -1082,16 +1160,30 @@ private fun HeroArtwork(
                                 },
                             )
 
-                            if (statusMessage != null || isPreparing) {
-                                Text(
-                                    text = statusMessage ?: "正在解析音频地址，请稍等一下。",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (statusMessage != null) AccentGold else TextTertiary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
+                            Text(
+                                text = when {
+                                    statusMessage != null -> statusMessage
+                                    isPreparing -> "正在解析音频地址，请稍等一下。"
+                                    else -> ""
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (statusMessage != null) AccentGold else TextTertiary,
+                                modifier = Modifier.height(18.dp),
+                                minLines = 1,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
+                    }
+
+                    if (isHeartModeActive) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        RecommendationReasonBar(
+                            reason = recommendationReason
+                                ?.takeIf(String::isNotBlank)
+                                ?: "根据你的收藏和最近播放反馈",
+                            onDislike = onDislikeRecommendation,
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -1109,12 +1201,14 @@ private fun HeroArtwork(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    HeartModeToggle(
+                    ExplorationRadioCard(
                         isActive = isHeartModeActive,
                         isLoading = isHeartModeLoading,
+                        hasFavorites = hasFavorites,
                         statusLabel = heartModeStatusLabel,
                         isDegraded = isHeartModeDegraded,
-                        onToggle = { onToggleHeartMode() },
+                        errorMessage = heartModeErrorMessage,
+                        onClick = onToggleHeartMode,
                     )
                 }
             }
@@ -1217,6 +1311,8 @@ private fun MetaChip(
                 text = text,
                 style = MaterialTheme.typography.labelMedium,
                 color = TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -1406,26 +1502,161 @@ private fun CompactTransportButton(
 }
 
 @Composable
-private fun HeartModeToggle(
-    isActive: Boolean,
-    isLoading: Boolean,
-    statusLabel: String?,
-    isDegraded: Boolean,
-    onToggle: (Boolean) -> Unit,
+private fun RecommendationReasonBar(
+    reason: String,
+    onDislike: () -> Unit,
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth().clickable(enabled = !isLoading) { onToggle(!isActive) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(60.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = AccentSky.copy(alpha = 0.07f),
+        border = BorderStroke(1.dp, AccentSky.copy(alpha = 0.16f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, top = 10.dp, end = 8.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(AccentSky.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = AccentSky,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "推荐依据",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AccentSky,
+                )
+                Text(
+                    text = reason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = "减少类似歌曲推荐",
+                        onClick = onDislike,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ThumbDown,
+                    contentDescription = "不喜欢这条推荐",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExplorationRadioCard(
+    isActive: Boolean,
+    isLoading: Boolean,
+    hasFavorites: Boolean,
+    statusLabel: String?,
+    isDegraded: Boolean,
+    errorMessage: String?,
+    onClick: () -> Unit,
+) {
+    val hasError = errorMessage != null || isDegraded
+    val title = when {
+        isLoading -> "正在准备探索电台"
+        isActive -> "探索电台播放中"
+        !hasFavorites -> "从喜欢的歌开始探索"
+        hasError -> "探索暂时中断"
+        else -> "探索电台"
+    }
+    val supportingText = when {
+        isLoading -> statusLabel ?: "正在挑选第一首歌"
+        isActive && hasError -> errorMessage ?: statusLabel ?: "正在使用已有队列继续播放"
+        isActive -> statusLabel ?: "会根据跳过和收藏持续调整"
+        !hasFavorites -> "先收藏几首歌曲，推荐会更准确"
+        hasError -> errorMessage ?: statusLabel ?: "可以重新生成一组歌曲"
+        else -> statusLabel ?: "根据收藏生成一组连续播放的歌曲"
+    }
+    val actionLabel = when {
+        isLoading -> ""
+        isActive -> "停止"
+        !hasFavorites -> "去搜索"
+        hasError -> "重试"
+        else -> "开始"
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(68.dp)
+            .semantics {
+                if (hasError) {
+                    liveRegion = LiveRegionMode.Polite
+                }
+            }
+            .clickable(
+                enabled = !isLoading,
+                role = Role.Button,
+                onClickLabel = actionLabel.takeIf(String::isNotBlank),
+                onClick = onClick,
+            ),
         shape = RoundedCornerShape(22.dp),
-        color = if (isActive) Color.White.copy(alpha = 0.05f) else Color.Transparent,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = if (isActive) 0.15f else 0.08f)),
+        color = when {
+            isActive -> AccentMint.copy(alpha = 0.08f)
+            hasError -> AccentGold.copy(alpha = 0.07f)
+            else -> Color.White.copy(alpha = 0.035f)
+        },
+        border = BorderStroke(
+            1.dp,
+            when {
+                isActive -> AccentMint.copy(alpha = 0.26f)
+                hasError -> AccentGold.copy(alpha = 0.24f)
+                else -> Color.White.copy(alpha = 0.08f)
+            },
+        ),
     ) {
         Row(
             modifier = Modifier
-                .padding(horizontal = 20.dp, vertical = 14.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(
+                        when {
+                            isActive -> AccentMint.copy(alpha = 0.16f)
+                            hasError -> AccentGold.copy(alpha = 0.14f)
+                            else -> SurfaceSecondary.copy(alpha = 0.72f)
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
                 if (isLoading) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
@@ -1434,46 +1665,62 @@ private fun HeartModeToggle(
                     )
                 } else {
                     Icon(
-                        imageVector = if (isActive) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        imageVector = Icons.Default.Radio,
                         contentDescription = null,
-                        tint = if (isActive) AccentMint else TextSecondary,
-                        modifier = Modifier.size(20.dp),
+                        tint = when {
+                            isActive -> AccentMint
+                            hasError -> AccentGold
+                            else -> AccentSky
+                        },
+                        modifier = Modifier.size(22.dp),
                     )
-                }
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text(
-                        text = "探索电台",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (isActive) TextPrimary else TextSecondary,
-                    )
-                    val supportingText = if (isLoading) {
-                        "正在准备电台中"
-                    } else {
-                        statusLabel
-                    }
-                    if (supportingText != null) {
-                        Text(
-                            text = supportingText,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (isDegraded) AccentGold else TextTertiary,
-                        )
-                    }
                 }
             }
-            
-            Switch(
-                checked = isActive,
-                onCheckedChange = { onToggle(it) },
-                enabled = !isLoading,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = MidnightBackground,
-                    checkedTrackColor = AccentMint,
-                    uncheckedThumbColor = TextSecondary,
-                    uncheckedTrackColor = SurfaceSecondary,
-                    uncheckedBorderColor = Color.Transparent,
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-            )
+                Text(
+                    text = supportingText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (hasError) AccentGold else TextTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            if (!isLoading) {
+                Spacer(modifier = Modifier.width(10.dp))
+                Surface(
+                    shape = PillShape,
+                    color = if (isActive) {
+                        AccentMint.copy(alpha = 0.14f)
+                    } else {
+                        SurfaceSecondary.copy(alpha = 0.72f)
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (isActive) AccentMint.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.08f),
+                    ),
+                ) {
+                    Text(
+                        text = actionLabel,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (isActive) AccentMint else TextPrimary,
+                    )
+                }
+            }
         }
     }
 }
@@ -1658,14 +1905,17 @@ private fun AiSettingsSheet(
     onEndpointChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onAccessKeyChange: (String) -> Unit,
-    onLastFmApiKeyChange: (String) -> Unit,
     onSave: () -> Unit,
     onClose: () -> Unit,
 ) {
+    var isAccessKeyVisible by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
+            .imePadding()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -1675,13 +1925,13 @@ private fun AiSettingsSheet(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "AI 推荐设置",
+                    text = "推荐增强",
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "支持 OpenAI 兼容接口 + Last.fm 快速推荐。",
+                    text = "基础推荐开箱即用，AI 配置为可选增强。",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextTertiary,
                 )
@@ -1690,15 +1940,15 @@ private fun AiSettingsSheet(
             IconButton(onClick = onClose) {
                 Icon(
                     imageVector = Icons.Default.Close,
-                    contentDescription = "关闭 AI 设置",
+                    contentDescription = "关闭推荐增强设置",
                     tint = TextSecondary,
                 )
             }
         }
 
         SearchHintCard(
-            title = "填写方式",
-            body = "接口地址可填写完整的 /chat/completions 地址，也可以填写到 /v1，应用会自动补全。填写 Last.fm API Key 可获得秒级推荐。",
+            title = "什么时候会使用 AI",
+            body = "相似歌曲不足时，应用才会调用 AI 补充候选。不填写也可以正常使用探索电台。",
         )
 
         OutlinedTextField(
@@ -1706,7 +1956,7 @@ private fun AiSettingsSheet(
             onValueChange = onEndpointChange,
             modifier = Modifier.fillMaxWidth(),
             label = {
-                Text("AI 接口地址")
+                Text("AI 接口地址（可选）")
             },
             singleLine = true,
             keyboardOptions = KeyboardOptions(
@@ -1731,7 +1981,7 @@ private fun AiSettingsSheet(
             onValueChange = onModelChange,
             modifier = Modifier.fillMaxWidth(),
             label = {
-                Text("模型名")
+                Text("模型名（可选）")
             },
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
@@ -1753,14 +2003,35 @@ private fun AiSettingsSheet(
             onValueChange = onAccessKeyChange,
             modifier = Modifier.fillMaxWidth(),
             label = {
-                Text("Access Key")
+                Text("Access Key（可选）")
             },
             singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = if (isAccessKeyVisible) {
+                VisualTransformation.None
+            } else {
+                PasswordVisualTransformation()
+            },
+            trailingIcon = {
+                IconButton(onClick = { isAccessKeyVisible = !isAccessKeyVisible }) {
+                    Icon(
+                        imageVector = if (isAccessKeyVisible) {
+                            Icons.Default.VisibilityOff
+                        } else {
+                            Icons.Default.Visibility
+                        },
+                        contentDescription = if (isAccessKeyVisible) {
+                            "隐藏 Access Key"
+                        } else {
+                            "显示 Access Key"
+                        },
+                    )
+                }
+            },
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Password,
-                imeAction = ImeAction.Next,
+                imeAction = ImeAction.Done,
             ),
+            keyboardActions = KeyboardActions(onDone = { onSave() }),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = AccentMint,
                 unfocusedBorderColor = TextMuted.copy(alpha = 0.65f),
@@ -1774,55 +2045,26 @@ private fun AiSettingsSheet(
             ),
         )
 
-        OutlinedTextField(
-            value = state.lastFmApiKey,
-            onValueChange = onLastFmApiKeyChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = {
-                Text("Last.fm API Key（可选，加速推荐）")
-            },
-            supportingText = {
-                Text(
-                    text = "在 last.fm/api 免费注册获取，可大幅提升推荐速度",
-                    color = TextTertiary,
-                )
-            },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Password,
-                imeAction = ImeAction.Done,
-            ),
-            keyboardActions = KeyboardActions(onDone = { onSave() }),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = AccentSky,
-                unfocusedBorderColor = TextMuted.copy(alpha = 0.65f),
-                focusedLabelColor = AccentSky,
-                unfocusedLabelColor = TextTertiary,
-                cursorColor = AccentSky,
-                focusedTextColor = TextPrimary,
-                unfocusedTextColor = TextPrimary,
-                focusedContainerColor = SurfaceSecondary.copy(alpha = 0.64f),
-                unfocusedContainerColor = SurfaceSecondary.copy(alpha = 0.38f),
-            ),
-        )
-
-        if (state.missingFields().isNotEmpty() && state.lastFmApiKey.isBlank()) {
+        if (state.missingFields().isNotEmpty()) {
             SearchHintCard(
-                title = "还差这些信息",
-                body = state.missingFields().joinToString(separator = "、") + "（或只填 Last.fm API Key 也能用）",
+                title = "AI 增强尚未启用",
+                body = "还未填写：" +
+                    state.missingFields().joinToString(separator = "、") +
+                    "。这些字段可以保持为空。",
             )
-        } else if (favoriteCount == 0) {
+        }
+
+        if (favoriteCount == 0) {
             SearchHintCard(
-                title = "配置已经齐了",
-                body = "现在只差收藏几首歌，AI 就能基于你的收藏夹给出推荐。",
+                title = "还没有推荐种子",
+                body = "先去搜索并收藏几首喜欢的歌，再开始探索电台。",
             )
         }
 
         ActionPill(
             modifier = Modifier.fillMaxWidth(),
             icon = Icons.Default.PlayArrow,
-            label = if (favoriteCount > 0) "保存并刷新推荐" else "保存配置",
+            label = if (favoriteCount > 0) "保存并刷新电台" else "保存设置",
             onClick = onSave,
         )
 
@@ -2018,15 +2260,26 @@ private fun MiniInfoPill(
     icon: ImageVector,
     label: String,
     onClick: (() -> Unit)? = null,
+    onClickLabel: String? = null,
 ) {
     Surface(
+        modifier = if (onClick != null) {
+            Modifier.sizeIn(minHeight = 44.dp)
+        } else {
+            Modifier
+        },
         shape = PillShape,
         color = SurfaceSecondary.copy(alpha = 0.76f),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
     ) {
         Row(
             modifier = Modifier
-                .clickable(enabled = onClick != null, onClick = { onClick?.invoke() })
+                .clickable(
+                    enabled = onClick != null,
+                    role = if (onClick != null) Role.Button else null,
+                    onClickLabel = onClickLabel,
+                    onClick = { onClick?.invoke() },
+                )
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -2107,4 +2360,11 @@ private fun formatTime(ms: Long): String {
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "%d:%02d".format(minutes, seconds)
+}
+
+private fun String.toDisplayRecommendationReason(): String {
+    return when (trim()) {
+        "Similar to your favorites" -> "来自你的收藏相似推荐"
+        else -> trim()
+    }
 }

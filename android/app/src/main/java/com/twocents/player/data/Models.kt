@@ -43,6 +43,7 @@ data class Track(
 data class PlaybackState(
     val currentTrack: Track? = null,
     val isPlaying: Boolean = false,
+    val playWhenReady: Boolean = false,
     val currentPositionMs: Long = 0L,
     val playlist: List<Track> = emptyList(),
     val currentIndex: Int = 0,

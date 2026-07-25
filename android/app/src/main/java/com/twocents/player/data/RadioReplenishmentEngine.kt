@@ -62,8 +62,13 @@ class RadioReplenishmentEngine(
                 }.ifBlank { "无可用种子" },
             )
 
-            val useFastSource = attempts == 0
-                && fastCandidateSource != null
+            val fastAttemptLimit = if (settings.isComplete) {
+                (MAX_ATTEMPTS - 1).coerceAtLeast(1)
+            } else {
+                MAX_ATTEMPTS
+            }
+            val useFastSource = fastCandidateSource != null &&
+                attempts < fastAttemptLimit
 
             val candidateStart = System.currentTimeMillis()
             val suggestions = if (useFastSource) {
@@ -74,19 +79,7 @@ class RadioReplenishmentEngine(
                 }.getOrDefault(emptyList())
                 val fastMs = System.currentTimeMillis() - fastStart
                 logger.debug("  [候选] 快速源返回 ${fastResult.size} 条 (${fastMs}ms)")
-                if (fastResult.isEmpty() && settings.isComplete) {
-                    logger.debug("  [候选] 快速源无结果，fallback 到 AI...")
-                    val aiStart = System.currentTimeMillis()
-                    aiRequestCount += 1
-                    val aiResult = runCatching {
-                        candidateSource.requestRadioCandidates(settings, request)
-                    }.getOrDefault(emptyList())
-                    val aiMs = System.currentTimeMillis() - aiStart
-                    logger.debug("  [候选] AI fallback 返回 ${aiResult.size} 条 (${aiMs}ms)")
-                    aiResult
-                } else {
-                    fastResult
-                }
+                fastResult
             } else if (!settings.isComplete || aiRequestCount >= MAX_AI_REQUESTS_PER_REPLENISH) {
                 emptyList()
             } else {
@@ -170,16 +163,18 @@ class RadioReplenishmentEngine(
                 break
             }
 
-            val canTryAnotherSource = settings.isComplete &&
+            val nextAttempt = attempts + 1
+            val canRetryFastSource = fastCandidateSource != null &&
+                nextAttempt < fastAttemptLimit
+            val canTryAiSource = settings.isComplete &&
                 aiRequestCount < MAX_AI_REQUESTS_PER_REPLENISH &&
-                useFastSource &&
-                suggestions.isNotEmpty()
+                nextAttempt < MAX_ATTEMPTS
             workingSession = workingSession.copy(
                 boundaryState = RadioBoundaryState.RECOVERING,
                 statusLabel = RadioBoundaryState.RECOVERING.statusLabel(),
                 consecutiveLowYieldCount = workingSession.consecutiveLowYieldCount + 1,
             )
-            if (!canTryAnotherSource) {
+            if (!canRetryFastSource && !canTryAiSource) {
                 break
             }
             attempts += 1

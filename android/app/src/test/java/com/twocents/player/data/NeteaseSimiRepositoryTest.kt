@@ -35,6 +35,7 @@ class NeteaseSimiRepositoryTest {
         assertEquals(listOf("netease:shared", "netease:a", "netease:b", "netease:c", "netease:d"), result.map { it.resolvedTrack?.id })
         assertEquals(setOf("netease:seed-1", "netease:seed-2"), result.first().matchedSeedIds)
         assertEquals(setOf("netease-simi"), result.first().retrievalSources)
+        assertEquals("因为你喜欢「seed-1」", result.first().reason)
         assertEquals(listOf("seed-1", "seed-2", "seed-3"), (0 until 3).map { server.takeRequest().body.readUtf8().substringAfter("songid=").substringBefore('&') })
     }
 

@@ -121,6 +121,49 @@ class RadioHistoryStoreTest {
         assertEquals("new-track", snapshot.events.last().trackId)
     }
 
+    @Test
+    fun removeLatestNegativeEvent_keepsEarlierAndUnrelatedFeedback() {
+        val nowMs = 1_000_000_000_000L
+        val preferences = FakeSharedPreferences()
+        val store = RadioHistoryStore(preferences) { nowMs }
+        store.recordEvent(
+            RadioFeedbackEvent(
+                trackId = "target",
+                artistKey = "artist-target",
+                type = RadioFeedbackType.POSITIVE,
+                timestampMs = nowMs - 3L,
+            ),
+        )
+        store.recordEvent(
+            RadioFeedbackEvent(
+                trackId = "target",
+                artistKey = "artist-target",
+                type = RadioFeedbackType.STRONG_NEGATIVE,
+                timestampMs = nowMs - 2L,
+            ),
+        )
+        store.recordEvent(
+            RadioFeedbackEvent(
+                trackId = "other",
+                artistKey = "artist-other",
+                type = RadioFeedbackType.MILD_NEGATIVE,
+                timestampMs = nowMs - 1L,
+            ),
+        )
+
+        val removed = store.removeLatestNegativeEvent("target")
+        val snapshot = store.loadSnapshot(nowMs)
+
+        assertTrue(removed)
+        assertEquals(
+            listOf(RadioFeedbackType.POSITIVE),
+            snapshot.events.filter { it.trackId == "target" }.map { it.type },
+        )
+        assertTrue("target" in snapshot.positiveTrackIds)
+        assertFalse("target" in snapshot.negativeTrackIds)
+        assertTrue("other" in snapshot.negativeTrackIds)
+    }
+
     private fun event(
         trackId: String,
         artistKey: String,

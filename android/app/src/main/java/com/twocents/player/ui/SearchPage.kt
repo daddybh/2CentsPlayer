@@ -24,7 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
@@ -92,7 +92,7 @@ fun SearchPage(
         ) {
             IconButton(onClick = onNavigateBack) {
                 Icon(
-                    imageVector = Icons.Default.ArrowBack,
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "返回",
                     tint = TextSecondary,
                 )
@@ -463,7 +463,7 @@ fun SearchResultCard(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Surface(
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.size(48.dp),
                     shape = CircleShape,
                     color = Color.Black.copy(alpha = 0.18f),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
@@ -478,7 +478,7 @@ fun SearchResultCard(
                             imageVector = if (track.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = if (track.isFavorite) "取消收藏" else "加入收藏",
                             tint = if (track.isFavorite) FavoriteRed else TextSecondary,
-                            modifier = Modifier.size(18.dp),
+                            modifier = Modifier.size(20.dp),
                         )
                     }
                 }

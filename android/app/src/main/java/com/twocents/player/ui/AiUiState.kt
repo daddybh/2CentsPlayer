@@ -32,4 +32,11 @@ data class AiRecommendationUiState(
     val sourceFavoriteCount: Int = 0,
     val suggestionCount: Int = 0,
     val skippedCount: Int = 0,
+    val feedbackNotice: AiFeedbackNotice? = null,
+)
+
+data class AiFeedbackNotice(
+    val id: Long,
+    val trackId: String,
+    val message: String,
 )

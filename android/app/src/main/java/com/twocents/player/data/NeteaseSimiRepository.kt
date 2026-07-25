@@ -164,6 +164,7 @@ class NeteaseSimiRepository(
                 }
 
                 val enriched = suggestion.copy(
+                    reason = "因为你喜欢「${seed.title}」",
                     matchedSeedIds = suggestion.matchedSeedIds + seed.id,
                     retrievalSources = suggestion.retrievalSources + SOURCE_KEY,
                 )

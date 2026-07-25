@@ -387,6 +387,61 @@ class RadioReplenishmentEngineTest {
     }
 
     @Test
+    fun replenish_rotatesFastSeedsWhenFirstWaveIsLocallyBlocked() {
+        val blockedTrack = track("blocked", "Blocked Artist")
+        val allowedTrack = track("allowed", "Allowed Artist")
+        val fastSource = FakeRadioCandidateSource(
+            responses = listOf(
+                listOf(
+                    AiSuggestedTrack(
+                        title = blockedTrack.title,
+                        artist = blockedTrack.artist,
+                        resolvedTrack = blockedTrack,
+                    ),
+                ),
+                listOf(
+                    AiSuggestedTrack(
+                        title = allowedTrack.title,
+                        artist = allowedTrack.artist,
+                        resolvedTrack = allowedTrack,
+                    ),
+                ),
+            ),
+        )
+        val aiSource = ThrowingCandidateSource()
+        val favorites = (1..6).map { index ->
+            track("favorite-$index", "Favorite Artist $index")
+        }
+        val engine = RadioReplenishmentEngine(
+            candidateSource = aiSource,
+            fastCandidateSource = fastSource,
+            trackLookup = FakeRadioTrackLookup(emptyMap()),
+        )
+
+        val result = runBlocking {
+            engine.replenish(
+                settings = AiServiceConfig(endpoint = "https://api.example", model = "m", accessKey = "k"),
+                favorites = favorites,
+                history = RadioHistorySnapshot(negativeTrackIds = setOf(blockedTrack.id)),
+                session = RadioSessionState(611L),
+                minimumRequiredAppend = 1,
+            )
+        }
+
+        assertEquals(listOf(allowedTrack.id), result.appendedRecommendations.map { it.track.id })
+        assertEquals(2, fastSource.callCount)
+        assertEquals(0, aiSource.callCount)
+        assertEquals(
+            listOf("favorite-1", "favorite-2", "favorite-3"),
+            fastSource.requests[0].favoriteSeeds.map(Track::id),
+        )
+        assertEquals(
+            listOf("favorite-4", "favorite-5", "favorite-6"),
+            fastSource.requests[1].favoriteSeeds.map(Track::id),
+        )
+    }
+
+    @Test
     fun replenish_keepsPartialFastResultsWhenAiFallbackFails() {
         val fastSource = FakeRadioCandidateSource(
             responses = listOf(

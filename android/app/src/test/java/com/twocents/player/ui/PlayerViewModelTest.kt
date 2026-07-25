@@ -124,6 +124,64 @@ class PlayerViewModelTest {
     }
 
     @Test
+    fun dislikeCurrentRadioTrack_canUndoRecommendationFeedback() {
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val dislikedTrack = track(id = "radio-dislike", title = "Radio Dislike")
+        val nextTrack = track(id = "radio-next", title = "Radio Next")
+        val queue = listOf(dislikedTrack, nextTrack)
+        viewModel.onPlayerQueueChanged(
+            queue = queue,
+            currentIndex = 0,
+            positionMs = 5_000L,
+            durationMs = dislikedTrack.durationMs,
+            isPlaying = true,
+        )
+        viewModel.setPrivateField("radioSession", radioSession(queue))
+        viewModel.applyPlaybackSource("AI")
+
+        viewModel.dislikeCurrentRadioTrack()
+
+        val notice = viewModel.aiRecommendationState.feedbackNotice
+        val historyAfterDislike = RadioHistoryStore(
+            application.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE),
+        ).loadSnapshot(System.currentTimeMillis())
+        assertEquals(dislikedTrack.id, notice?.trackId)
+        assertTrue(dislikedTrack.id in historyAfterDislike.negativeTrackIds)
+        assertTrue(
+            dislikedTrack.id in (
+                viewModel.getPrivateField("radioSession") as RadioSessionState
+            ).skippedTrackIds,
+        )
+
+        viewModel.undoLastRadioDislike(notice?.trackId.orEmpty())
+
+        val historyAfterUndo = RadioHistoryStore(
+            application.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE),
+        ).loadSnapshot(System.currentTimeMillis())
+        assertFalse(dislikedTrack.id in historyAfterUndo.negativeTrackIds)
+        assertFalse(
+            dislikedTrack.id in (
+                viewModel.getPrivateField("radioSession") as RadioSessionState
+            ).skippedTrackIds,
+        )
+        assertNull(viewModel.aiRecommendationState.feedbackNotice)
+    }
+
+    @Test
+    fun playAiRecommendations_withoutFavorites_keepsSettingsClosedAndShowsGuidance() {
+        val viewModel = PlayerViewModel(FakeApplication())
+
+        viewModel.playAiRecommendations()
+
+        assertFalse(viewModel.aiSettingsState.isVisible)
+        assertEquals(
+            "先收藏几首喜欢的歌，再开始探索电台。",
+            viewModel.aiRecommendationState.errorMessage,
+        )
+    }
+
+    @Test
     fun prepareTrackForPlayback_resolvesCurrentTrackBeforeRemainingQueue() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val application = FakeApplication()
@@ -173,6 +231,26 @@ class PlayerViewModelTest {
             ),
             neteaseSource.resolveCalls,
         )
+    }
+
+    @Test
+    fun onPlayerQueueChanged_preservesAutoPlayIntentWhileBuffering() {
+        val viewModel = PlayerViewModel(FakeApplication())
+        val bufferingTrack = track(id = "buffering", title = "Buffering")
+
+        viewModel.onPlayerQueueChanged(
+            queue = listOf(bufferingTrack),
+            currentIndex = 0,
+            positionMs = 0L,
+            durationMs = bufferingTrack.durationMs,
+            isPlaying = false,
+            playWhenReady = true,
+            isPreparing = true,
+        )
+
+        assertFalse(viewModel.playbackState.isPlaying)
+        assertTrue(viewModel.playbackState.playWhenReady)
+        assertTrue(viewModel.playbackState.isPreparing)
     }
 
     @Test

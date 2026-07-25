@@ -74,6 +74,7 @@ fun BindPlayer(
 
         when (val command = pendingCommand) {
             is PlayerCommand.LoadTrack -> {
+                player.playWhenReady = command.playWhenReady
                 player.setMediaItems(
                     command.queue.map { it.toMediaItem() },
                     command.index,
@@ -143,5 +144,7 @@ private fun syncPlayerState(
         positionMs = player.currentPosition,
         durationMs = player.duration,
         isPlaying = player.isPlaying,
+        playWhenReady = player.playWhenReady,
+        isPreparing = player.playbackState == Player.STATE_BUFFERING,
     )
 }
