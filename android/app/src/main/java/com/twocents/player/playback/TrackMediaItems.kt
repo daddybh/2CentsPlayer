@@ -6,6 +6,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import com.twocents.player.data.Track
 import com.twocents.player.data.TrackSource
+import com.twocents.player.data.optimizedArtworkUrl
 import com.twocents.player.data.sourceTrackId
 import com.twocents.player.data.withCanonicalIdentity
 
@@ -27,6 +28,7 @@ fun Track.toMediaItem(): MediaItem {
         )
 
     coverUrl
+        .optimizedArtworkUrl()
         .takeIf { it.isNotBlank() }
         ?.let { metadataBuilder.setArtworkUri(Uri.parse(it)) }
 
@@ -47,7 +49,7 @@ fun MediaItem.toTrack(): Track {
         artist = metadata.artist?.toString().orEmpty(),
         album = metadata.albumTitle?.toString().orEmpty(),
         durationMs = metadata.extras?.getLong(EXTRA_DURATION_MS) ?: 0L,
-        coverUrl = metadata.artworkUri?.toString().orEmpty(),
+        coverUrl = metadata.artworkUri?.toString().orEmpty().optimizedArtworkUrl(),
         audioUrl = localConfiguration?.uri?.toString().orEmpty(),
     ).withCanonicalIdentity()
 }

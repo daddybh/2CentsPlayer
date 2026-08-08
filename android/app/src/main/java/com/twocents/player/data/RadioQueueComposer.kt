@@ -7,6 +7,7 @@ data class RadioResolvedCandidate(
     val retrievalSources: Set<String> = emptySet(),
     val score: Int = 0,
     val stableKey: String = "",
+    val sourceRank: Int = Int.MAX_VALUE,
 )
 
 class RadioQueueComposer {
@@ -33,6 +34,7 @@ class RadioQueueComposer {
             .distinctBy { it.stableKey.ifBlank { stableTrackKey(it.recommendation.track) } }
             .sortedWith(
                 compareByDescending<RadioResolvedCandidate>(RadioResolvedCandidate::score)
+                    .thenBy(RadioResolvedCandidate::sourceRank)
                     .thenBy { it.stableKey.ifBlank { stableTrackKey(it.recommendation.track) } },
             )
             .toMutableList()

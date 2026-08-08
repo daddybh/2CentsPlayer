@@ -13,6 +13,7 @@ import com.twocents.player.data.AiSettingsStore
 import com.twocents.player.data.AndroidRadioDiagnosticLogger
 import com.twocents.player.data.FavoritesStore
 import com.twocents.player.data.MusicLibraryRepository
+import com.twocents.player.data.NeteaseSearchRepository
 import com.twocents.player.data.NeteaseSimiRepository
 import com.twocents.player.data.RadioSessionStore
 import com.twocents.player.data.PlaybackState
@@ -26,6 +27,8 @@ import com.twocents.player.data.RadioWaveTargets
 import com.twocents.player.data.Track
 import com.twocents.player.data.classifyCompletion
 import com.twocents.player.data.classifySkip
+import com.twocents.player.data.isSuspiciousPlaybackDuration
+import com.twocents.player.data.optimizedArtworkUrl
 import com.twocents.player.data.withCanonicalIdentity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -45,6 +48,8 @@ class PlayerViewModel(
         const val RADIO_START_MIN_APPEND = 1
         const val RADIO_START_RAW_CANDIDATE_LIMIT = 4
         const val SEARCH_PAGE_SIZE = 20
+        const val MAX_PLAYBACK_RECOVERY_ATTEMPTS = 1
+        const val MAX_LYRICS_CACHE_ENTRIES = 20
         val RADIO_START_WAVE_TARGETS = RadioWaveTargets(
             safeCount = 1,
             adjacentCount = 1,
@@ -82,10 +87,14 @@ class PlayerViewModel(
     }
 
     private val aiRecommendationRepository = AiRecommendationRepository()
-    private val radioDiagnosticLogger = AndroidRadioDiagnosticLogger
+    private val radioDiagnosticLogger = AndroidRadioDiagnosticLogger(application)
     private val neteaseSimiRepository = NeteaseSimiRepository(logger = radioDiagnosticLogger)
+    private val neteaseSearchRepository = NeteaseSearchRepository(logger = radioDiagnosticLogger)
     private val aiSettingsStore = AiSettingsStore(application)
-    private val musicLibraryRepository = MusicLibraryRepository(logger = radioDiagnosticLogger)
+    private val musicLibraryRepository = MusicLibraryRepository(
+        neteaseRepository = neteaseSearchRepository,
+        logger = radioDiagnosticLogger,
+    )
     private val favoritesStore = FavoritesStore(application)
     private val radioSessionStore = RadioSessionStore(application)
     private val radioHistoryStore = RadioHistoryStore.fromContext(application)
@@ -96,7 +105,11 @@ class PlayerViewModel(
         logger = radioDiagnosticLogger,
     )
     private val shuffleRandom = Random(System.currentTimeMillis())
-    private val lyricsCache = mutableMapOf<String, LyricsContent>()
+    private val lyricsCache = object : LinkedHashMap<String, LyricsContent>(MAX_LYRICS_CACHE_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, LyricsContent>?,
+        ): Boolean = size > MAX_LYRICS_CACHE_ENTRIES
+    }
 
     private var latestSearchRequestId = 0L
     private var latestPlaybackRequestId = 0L
@@ -110,6 +123,10 @@ class PlayerViewModel(
     private var radioSession: RadioSessionState? = null
     private var latestCompletedRadioTrackId: String? = null
     private var suppressedRadioCompletionTrackId: String? = null
+    private var playbackRecoveryTrackId: String? = null
+    private var playbackRecoveryAttemptCount = 0
+    private var lastDiagnosedPlaybackTrackId: String? = null
+    private var lastDiagnosedDurationKey: String? = null
 
     private val initialAiSettings = aiSettingsStore.loadSettings()
     private val initialFavorites = favoritesStore.loadFavorites().map { track ->
@@ -364,7 +381,7 @@ class PlayerViewModel(
         val session = radioSession ?: return
         if (currentTrack.id.isBlank() || currentTrack.id in session.skippedTrackIds) return
 
-        recordCurrentAiTrackSkipped()
+        recordCurrentAiTrackDisliked()
         aiRecommendationState = aiRecommendationState.copy(
             feedbackNotice = AiFeedbackNotice(
                 id = ++latestFeedbackNoticeId,
@@ -419,6 +436,10 @@ class PlayerViewModel(
             return
         }
 
+        val initialSession = RadioSessionState(
+            sessionId = nextAiSessionId(),
+            usedSeedIds = radioHistoryStore.loadRecentSeedIds().toSet(),
+        )
         viewModelScope.launch {
             aiRecommendationState = aiRecommendationState.copy(
                 isLoading = true,
@@ -434,7 +455,7 @@ class PlayerViewModel(
                         settings = config,
                         favorites = favorites,
                         history = radioHistoryStore.loadSnapshot(),
-                        session = RadioSessionState(sessionId = nextAiSessionId()),
+                        session = initialSession,
                         minimumRequiredAppend = if (playAfterRefresh) {
                             RADIO_START_MIN_APPEND
                         } else {
@@ -458,6 +479,9 @@ class PlayerViewModel(
                 }
                 val normalizedSession = result.updatedSession.copy(
                     queuedRecommendations = normalizedTracks,
+                )
+                radioHistoryStore.recordSeedExposure(
+                    result.updatedSession.usedSeedIds - initialSession.usedSeedIds,
                 )
                 radioSession = normalizedSession
                 latestCompletedRadioTrackId = null
@@ -756,6 +780,19 @@ class PlayerViewModel(
     fun onPlayerProgress(positionMs: Long, durationMs: Long) {
         val currentTrack = playbackState.currentTrack ?: return
         val normalizedDuration = durationMs.takeIf { it > 0 } ?: currentTrack.durationMs
+        if (
+            isSuspiciousPlaybackDuration(
+                catalogDurationMs = currentTrack.durationMs,
+                resolvedDurationMs = normalizedDuration,
+            ) && handleSuspiciousShortRadioAudio(
+                track = currentTrack,
+                actualDurationMs = normalizedDuration,
+                catalogDurationMs = currentTrack.durationMs,
+            )
+        ) {
+            return
+        }
+        logActualPlaybackDuration(currentTrack, normalizedDuration)
         val updatedTrack = if (normalizedDuration != currentTrack.durationMs) {
             currentTrack.copy(durationMs = normalizedDuration)
         } else {
@@ -774,6 +811,11 @@ class PlayerViewModel(
             playlist = updatedPlaylist,
             currentPositionMs = positionMs.coerceAtLeast(0L),
         )
+
+        if (positionMs >= 3_000L && playbackRecoveryTrackId == updatedTrack.id) {
+            playbackRecoveryTrackId = null
+            playbackRecoveryAttemptCount = 0
+        }
     }
 
     fun onPlayerQueueChanged(
@@ -790,6 +832,15 @@ class PlayerViewModel(
         val previousDurationMs = previousTrack?.durationMs ?: 0L
 
         if (queue.isEmpty()) {
+            val isRadioQueueBeingPrepared = activePlaybackSource == PlaybackSource.AI &&
+                (
+                    previousTrack == null ||
+                        playbackState.isPreparing ||
+                        aiRecommendationState.isLoading ||
+                        radioSession?.isLoadingMore == true
+                )
+            if (isRadioQueueBeingPrepared) return
+
             if (previousTrack != null) {
                 recordAiCompletionIfEligible(
                     track = previousTrack,
@@ -825,6 +876,10 @@ class PlayerViewModel(
             playlist[safeIndex] = updatedTrack
         }
         if (previousTrack != null && previousTrack.id != updatedTrack.id) {
+            radioDiagnosticLogger.debug(
+                "Playback end: track=${previousTrack.id}, title=${previousTrack.title}, " +
+                    "position=${previousPositionMs}ms, duration=${previousDurationMs}ms",
+            )
             recordAiCompletionIfEligible(
                 track = previousTrack,
                 positionMs = previousPositionMs,
@@ -843,6 +898,21 @@ class PlayerViewModel(
             statusMessage = null,
         )
 
+        if (
+            isSuspiciousPlaybackDuration(
+                catalogDurationMs = currentTrack.durationMs,
+                resolvedDurationMs = durationMs,
+            ) && handleSuspiciousShortRadioAudio(
+                track = updatedTrack,
+                actualDurationMs = durationMs,
+                catalogDurationMs = currentTrack.durationMs,
+                queue = updatedQueue,
+            )
+        ) {
+            return
+        }
+        logActualPlaybackDuration(updatedTrack, durationMs)
+
         if (lyricsState.isVisible && lyricsState.trackId != updatedTrack.id) {
             loadLyricsForTrack(updatedTrack)
         }
@@ -857,7 +927,13 @@ class PlayerViewModel(
     }
 
     fun onPlayerError(message: String?) {
+        val failedTrack = playbackState.currentTrack ?: return
         val currentIndex = playbackState.currentIndex
+        val shouldResume = playbackState.playWhenReady || playbackState.isPlaying
+        radioDiagnosticLogger.debug(
+            "Playback error: track=${failedTrack.id}, index=$currentIndex, " +
+                "source=$activePlaybackSource, shouldResume=$shouldResume, message=${message.orEmpty()}",
+        )
         val clearedCurrentTrack = playbackState.currentTrack?.copy(audioUrl = "")
         val clearedPlaylist = playbackState.playlist.toMutableList().also { playlist ->
             if (currentIndex in playlist.indices) {
@@ -872,6 +948,44 @@ class PlayerViewModel(
             isPreparing = false,
             statusMessage = message ?: "播放失败，请换一首歌试试。",
         )
+
+        if (!shouldResume) return
+
+        if (playbackRecoveryTrackId == failedTrack.id) {
+            playbackRecoveryAttemptCount += 1
+        } else {
+            playbackRecoveryTrackId = failedTrack.id
+            playbackRecoveryAttemptCount = 1
+        }
+
+        if (playbackRecoveryAttemptCount <= MAX_PLAYBACK_RECOVERY_ATTEMPTS) {
+            radioDiagnosticLogger.debug("Playback recovery: re-resolving ${failedTrack.id}")
+            prepareTrackForPlayback(
+                queue = clearedPlaylist,
+                index = currentIndex,
+                playWhenReady = true,
+                startPositionMs = 0L,
+                source = activePlaybackSource,
+            )
+            return
+        }
+
+        if (
+            tryNextPlaybackCandidate(
+                queue = clearedPlaylist,
+                failedIndex = currentIndex,
+                playWhenReady = true,
+                source = activePlaybackSource,
+            )
+        ) {
+            radioDiagnosticLogger.debug("Playback recovery: skipped ${failedTrack.id} after retry")
+            return
+        }
+
+        if (activePlaybackSource == PlaybackSource.AI) {
+            playbackState = playbackState.copy(statusMessage = "当前音源不可用，正在寻找下一首...")
+            queueMoreAiRecommendations(force = true, advanceToFirstNewTrack = true)
+        }
     }
 
     private fun prepareTrackForPlayback(
@@ -887,6 +1001,7 @@ class PlayerViewModel(
 
         val normalizedQueue = queue.map(::normalizeTrack)
         val targetTrack = normalizedQueue[index]
+        val requestId = ++latestPlaybackRequestId
         if (targetTrack.audioUrl.isNotBlank()) {
             commitPlayableQueue(
                 queue = normalizedQueue,
@@ -895,19 +1010,18 @@ class PlayerViewModel(
                 startPositionMs = startPositionMs,
                 source = source,
             )
+            prefetchUnresolvedQueue(
+                queue = normalizedQueue,
+                focusIndex = index,
+                requestId = requestId,
+                source = source,
+            )
             return
         }
 
         val targetTrackForResolution = targetTrack.takeIf { track ->
             track.id.isNotBlank() && track.audioUrl.isBlank()
         }
-        val remainingQueueForResolution = normalizedQueue.filterIndexed { queueIndex, track ->
-            queueIndex != index &&
-                track.id.isNotBlank() &&
-                track.audioUrl.isBlank()
-        }
-        val requestId = ++latestPlaybackRequestId
-
         playbackState = playbackState.copy(
             currentTrack = targetTrack,
             playlist = normalizedQueue,
@@ -931,7 +1045,7 @@ class PlayerViewModel(
                 val resolvedTrack = resolvedTargetTrack ?: targetTrack
                 if (resolvedTrack.audioUrl.isBlank()) {
                     if (
-                        tryNextRadioCandidate(
+                        tryNextPlaybackCandidate(
                             queue = normalizedQueue,
                             failedIndex = index,
                             playWhenReady = playWhenReady,
@@ -969,46 +1083,16 @@ class PlayerViewModel(
                     startPositionMs = startPositionMs,
                     source = source,
                 )
-
-                if (remainingQueueForResolution.isEmpty()) return@onSuccess
-
-                viewModelScope.launch {
-                    runCatching {
-                        withContext(Dispatchers.IO) {
-                            musicLibraryRepository.resolvePlayableTracks(remainingQueueForResolution)
-                        }
-                    }.onSuccess { resolvedTracks ->
-                        if (requestId != latestPlaybackRequestId) return@onSuccess
-                        val currentPlaybackTrack = playbackState.currentTrack ?: return@onSuccess
-                        if (currentPlaybackTrack.id != queueWithResolvedTarget[index].id) return@onSuccess
-
-                        val resolvedTrackMap = resolvedTracks.associateBy { track -> track.id }
-                        val mergedQueue = playbackState.playlist.map { track ->
-                            val resolvedQueueTrack = resolvedTrackMap[track.id]
-                            if (resolvedQueueTrack?.audioUrl.isNullOrBlank()) {
-                                track
-                            } else {
-                                track.copy(
-                                    audioUrl = resolvedQueueTrack?.audioUrl.orEmpty(),
-                                    durationMs = resolvedQueueTrack?.durationMs
-                                        ?.takeIf { durationMs -> durationMs > 0L }
-                                        ?: track.durationMs,
-                                )
-                            }
-                        }
-                        commitPlayableQueue(
-                            queue = mergedQueue.map(::normalizeTrack),
-                            index = playbackState.currentIndex.coerceIn(0, mergedQueue.lastIndex),
-                            playWhenReady = playbackState.playWhenReady,
-                            startPositionMs = playbackState.currentPositionMs,
-                            source = source,
-                        )
-                    }
-                }
+                prefetchUnresolvedQueue(
+                    queue = queueWithResolvedTarget,
+                    focusIndex = index,
+                    requestId = requestId,
+                    source = source,
+                )
             }.onFailure {
                 if (requestId != latestPlaybackRequestId) return@onFailure
                 if (
-                    tryNextRadioCandidate(
+                    tryNextPlaybackCandidate(
                         queue = normalizedQueue,
                         failedIndex = index,
                         playWhenReady = playWhenReady,
@@ -1031,13 +1115,90 @@ class PlayerViewModel(
         }
     }
 
-    private fun tryNextRadioCandidate(
+    private fun prefetchUnresolvedQueue(
+        queue: List<Track>,
+        focusIndex: Int,
+        requestId: Long,
+        source: PlaybackSource,
+    ) {
+        val unresolvedTracks = ((focusIndex + 1) until queue.size)
+            .map(queue::get)
+            .filter { track -> track.id.isNotBlank() && track.audioUrl.isBlank() }
+        if (unresolvedTracks.isEmpty()) return
+
+        viewModelScope.launch {
+            var resolvedQueue = queue
+            val priorityTrack = unresolvedTracks.first()
+            val priorityResult = runCatching {
+                withContext(Dispatchers.IO) {
+                    musicLibraryRepository.resolvePlayableTracks(listOf(priorityTrack))
+                }
+            }.getOrDefault(emptyList())
+            if (requestId != latestPlaybackRequestId) return@launch
+            resolvedQueue = mergeResolvedQueue(resolvedQueue, priorityResult)
+            publishResolvedQueue(resolvedQueue, requestId, source)
+
+            val remainingTracks = unresolvedTracks.drop(1)
+            if (remainingTracks.isEmpty()) return@launch
+
+            val remainingResults = runCatching {
+                withContext(Dispatchers.IO) {
+                    musicLibraryRepository.resolvePlayableTracks(remainingTracks)
+                }
+            }.getOrDefault(emptyList())
+            if (requestId != latestPlaybackRequestId) return@launch
+            resolvedQueue = mergeResolvedQueue(resolvedQueue, remainingResults)
+            publishResolvedQueue(resolvedQueue, requestId, source)
+        }
+    }
+
+    private fun mergeResolvedQueue(
+        queue: List<Track>,
+        resolvedTracks: List<Track>,
+    ): List<Track> {
+        val resolvedTrackMap = resolvedTracks
+            .filter { track -> track.audioUrl.isNotBlank() }
+            .associateBy { track -> track.id }
+        if (resolvedTrackMap.isEmpty()) return queue
+
+        return queue.map { track ->
+            val resolvedTrack = resolvedTrackMap[track.id] ?: return@map track
+            normalizeTrack(
+                track.copy(
+                    audioUrl = resolvedTrack.audioUrl,
+                    durationMs = resolvedTrack.durationMs.takeIf { it > 0L } ?: track.durationMs,
+                    album = track.album.ifBlank { resolvedTrack.album },
+                    coverUrl = track.coverUrl.ifBlank { resolvedTrack.coverUrl },
+                ),
+            )
+        }
+    }
+
+    private fun publishResolvedQueue(
+        queue: List<Track>,
+        requestId: Long,
+        source: PlaybackSource,
+    ) {
+        if (requestId != latestPlaybackRequestId) return
+        val currentTrackId = playbackState.currentTrack?.id ?: return
+        val currentIndex = queue.indexOfFirst { track -> track.id == currentTrackId }
+        if (currentIndex < 0) return
+
+        commitPlayableQueue(
+            queue = queue,
+            index = currentIndex,
+            playWhenReady = playbackState.playWhenReady,
+            startPositionMs = playbackState.currentPositionMs,
+            source = source,
+        )
+    }
+
+    private fun tryNextPlaybackCandidate(
         queue: List<Track>,
         failedIndex: Int,
         playWhenReady: Boolean,
         source: PlaybackSource,
     ): Boolean {
-        if (source != PlaybackSource.AI) return false
         val nextIndex = (failedIndex + 1 until queue.size).firstOrNull() ?: return false
         prepareTrackForPlayback(
             queue = queue,
@@ -1046,6 +1207,50 @@ class PlayerViewModel(
             startPositionMs = 0L,
             source = source,
         )
+        return true
+    }
+
+    private fun handleSuspiciousShortRadioAudio(
+        track: Track,
+        actualDurationMs: Long,
+        catalogDurationMs: Long,
+        queue: List<Track> = playbackState.playlist,
+    ): Boolean {
+        if (activePlaybackSource != PlaybackSource.AI) return false
+        val session = radioSession ?: return false
+        if (track.id.isBlank() || track.id in session.skippedTrackIds) return false
+
+        radioDiagnosticLogger.debug(
+            "Playback rejected: track=${track.id}, title=${track.title}, " +
+                "catalog=${catalogDurationMs}ms, actual=${actualDurationMs}ms, reason=short_audio",
+        )
+        val updatedSession = session.copy(
+            skippedTrackIds = session.skippedTrackIds + track.id,
+        )
+        radioSession = updatedSession
+        aiRecommendationState = aiRecommendationState.copy(
+            skippedCount = updatedSession.skippedTrackIds.size,
+            statusLabel = "已跳过异常短音源",
+        )
+        evictRecommendationFromCache(track.id)
+        suppressedRadioCompletionTrackId = track.id
+        latestCompletedRadioTrackId = latestCompletedRadioTrackId?.takeUnless { it == track.id }
+
+        val failedIndex = queue.indexOfFirst { queuedTrack -> queuedTrack.id == track.id }
+            .takeIf { it >= 0 }
+            ?: playbackState.currentIndex
+        if (
+            tryNextPlaybackCandidate(
+                queue = queue,
+                failedIndex = failedIndex,
+                playWhenReady = true,
+                source = PlaybackSource.AI,
+            )
+        ) {
+            return true
+        }
+
+        queueMoreAiRecommendations(force = true, advanceToFirstNewTrack = true)
         return true
     }
 
@@ -1060,11 +1265,27 @@ class PlayerViewModel(
 
         applyPlaybackSource(source)
 
-        val currentTrack = queue[index]
+        val requestedTrackId = queue[index].id
+        val playableQueue = queue
+            .map(::normalizeTrack)
+            .filter { track -> track.audioUrl.isNotBlank() }
+        val playableIndex = playableQueue.indexOfFirst { track -> track.id == requestedTrackId }
+        if (playableIndex < 0) return
+
+        val currentTrack = playableQueue[playableIndex]
+        if (lastDiagnosedPlaybackTrackId != currentTrack.id) {
+            radioDiagnosticLogger.debug(
+                "Playback start: track=${currentTrack.id}, title=${currentTrack.title}, " +
+                    "artist=${currentTrack.artist}, source=$source/${currentTrack.source.name}, " +
+                    "catalogDuration=${currentTrack.durationMs}ms, queueIndex=$playableIndex",
+            )
+            lastDiagnosedPlaybackTrackId = currentTrack.id
+            lastDiagnosedDurationKey = null
+        }
         playbackState = playbackState.copy(
             currentTrack = currentTrack,
-            playlist = queue,
-            currentIndex = index,
+            playlist = playableQueue,
+            currentIndex = playableIndex,
             currentPositionMs = startPositionMs,
             isPlaying = playWhenReady,
             playWhenReady = playWhenReady,
@@ -1078,11 +1299,21 @@ class PlayerViewModel(
         emitPlayerCommand(
             PlayerCommand.LoadTrack(
                 id = nextPlayerCommandId(),
-                queue = queue,
-                index = index,
+                queue = playableQueue,
+                index = playableIndex,
                 playWhenReady = playWhenReady,
                 startPositionMs = startPositionMs,
             ),
+        )
+    }
+
+    private fun logActualPlaybackDuration(track: Track, actualDurationMs: Long) {
+        if (actualDurationMs <= 0L) return
+        val durationKey = "${track.id}:$actualDurationMs"
+        if (lastDiagnosedDurationKey == durationKey) return
+        lastDiagnosedDurationKey = durationKey
+        radioDiagnosticLogger.debug(
+            "Playback duration: track=${track.id}, title=${track.title}, actual=${actualDurationMs}ms",
         )
     }
 
@@ -1141,7 +1372,20 @@ class PlayerViewModel(
         val session = radioSession ?: return
         if (session.isLoadingMore) return
 
-        val remainingCount = (playbackState.playlist.size - playbackState.currentIndex).coerceAtLeast(0)
+        val currentTrackId = playbackState.currentTrack?.id
+        val sessionCurrentIndex = session.queuedRecommendations.indexOfFirst { recommendation ->
+            recommendation.track.id == currentTrackId
+        }
+        val remainingCount = if (sessionCurrentIndex >= 0) {
+            session.queuedRecommendations
+                .drop(sessionCurrentIndex)
+                .count { recommendation ->
+                    recommendation.track.id !in session.playedTrackIds &&
+                        recommendation.track.id !in session.skippedTrackIds
+                }
+        } else {
+            (playbackState.playlist.size - playbackState.currentIndex).coerceAtLeast(0)
+        }
         if (!force) {
             if (remainingCount > AI_PREFETCH_THRESHOLD) return
             if (session.lastAutoAppendRemainingCount == remainingCount) return
@@ -1157,6 +1401,7 @@ class PlayerViewModel(
             isLoadingMore = true,
             lastAutoAppendRemainingCount = if (force) session.lastAutoAppendRemainingCount else remainingCount,
         )
+        val replenishmentSession = nextSessionState.copy(isLoadingMore = false)
         radioSession = nextSessionState
         aiRecommendationState = aiRecommendationState.copy(
             isLoadingMore = true,
@@ -1171,7 +1416,7 @@ class PlayerViewModel(
                         settings = config,
                         favorites = favorites,
                         history = radioHistoryStore.loadSnapshot(),
-                        session = nextSessionState.copy(isLoadingMore = false),
+                        session = replenishmentSession,
                     )
                 }
             }.onSuccess { result ->
@@ -1184,6 +1429,9 @@ class PlayerViewModel(
                     return@onSuccess
                 }
 
+                radioHistoryStore.recordSeedExposure(
+                    result.updatedSession.usedSeedIds - replenishmentSession.usedSeedIds,
+                )
                 val normalizedTracks = result.updatedSession.queuedRecommendations.map { recommendation ->
                     recommendation.copy(track = normalizeTrack(recommendation.track))
                 }
@@ -1241,23 +1489,13 @@ class PlayerViewModel(
                 } else {
                     playbackState.currentIndex.coerceIn(0, updatedQueue.lastIndex)
                 }
-                if (advanceToFirstNewTrack) {
-                    prepareTrackForPlayback(
-                        queue = updatedQueue,
-                        index = targetIndex,
-                        playWhenReady = true,
-                        startPositionMs = 0L,
-                        source = PlaybackSource.AI,
-                    )
-                } else {
-                    commitPlayableQueue(
-                        queue = updatedQueue,
-                        index = targetIndex,
-                        playWhenReady = playbackState.playWhenReady,
-                        startPositionMs = playbackState.currentPositionMs,
-                        source = PlaybackSource.AI,
-                    )
-                }
+                prepareTrackForPlayback(
+                    queue = updatedQueue,
+                    index = targetIndex,
+                    playWhenReady = if (advanceToFirstNewTrack) true else playbackState.playWhenReady,
+                    startPositionMs = if (advanceToFirstNewTrack) 0L else playbackState.currentPositionMs,
+                    source = PlaybackSource.AI,
+                )
             }.onFailure { error ->
                 val activeSession = radioSession
                 if (activeSession?.sessionId != sessionId) return@onFailure
@@ -1286,6 +1524,20 @@ class PlayerViewModel(
     }
 
     private fun recordCurrentAiTrackSkipped() {
+        val currentTrack = playbackState.currentTrack ?: return
+        recordCurrentAiTrackFeedback(
+            type = classifySkip(
+                positionMs = playbackState.currentPositionMs,
+                durationMs = currentTrack.durationMs,
+            ),
+        )
+    }
+
+    private fun recordCurrentAiTrackDisliked() {
+        recordCurrentAiTrackFeedback(RadioFeedbackType.STRONG_NEGATIVE)
+    }
+
+    private fun recordCurrentAiTrackFeedback(type: RadioFeedbackType) {
         if (activePlaybackSource != PlaybackSource.AI) return
 
         val currentTrack = playbackState.currentTrack ?: return
@@ -1295,10 +1547,7 @@ class PlayerViewModel(
 
         recordAiFeedback(
             track = currentTrack,
-            type = classifySkip(
-                positionMs = playbackState.currentPositionMs,
-                durationMs = currentTrack.durationMs,
-            ),
+            type = type,
         )
         val updatedSession = session.copy(
             skippedTrackIds = session.skippedTrackIds + currentTrack.id,
@@ -1413,6 +1662,12 @@ class PlayerViewModel(
         val normalizedTrack = normalizeTrack(track)
         val artistKey = normalizedTrack.artist.radioArtistKey()
         if (normalizedTrack.id.isBlank() || artistKey.isBlank()) return
+
+        radioDiagnosticLogger.debug(
+            "Playback feedback: track=${normalizedTrack.id}, title=${normalizedTrack.title}, " +
+                "type=$type, position=${playbackState.currentPositionMs}ms, " +
+                "duration=${normalizedTrack.durationMs}ms",
+        )
 
         radioHistoryStore.recordEvent(
             RadioFeedbackEvent(
@@ -1532,12 +1787,16 @@ class PlayerViewModel(
         val knownTrack = findKnownTrack(canonicalTrack.id)
         val isFavorite = favoritesState.tracks.any { it.id == canonicalTrack.id }
 
+        val coverUrl = canonicalTrack.coverUrl
+            .ifBlank { knownTrack?.coverUrl.orEmpty() }
+            .optimizedArtworkUrl()
+
         return canonicalTrack.copy(
             title = canonicalTrack.title.ifBlank { knownTrack?.title.orEmpty() },
             artist = canonicalTrack.artist.ifBlank { knownTrack?.artist.orEmpty() },
             album = canonicalTrack.album.ifBlank { knownTrack?.album.orEmpty() },
             durationMs = canonicalTrack.durationMs.takeIf { it > 0 } ?: knownTrack?.durationMs ?: 0L,
-            coverUrl = canonicalTrack.coverUrl.ifBlank { knownTrack?.coverUrl.orEmpty() },
+            coverUrl = coverUrl,
             audioUrl = canonicalTrack.audioUrl.ifBlank { knownTrack?.audioUrl.orEmpty() },
             isFavorite = isFavorite,
         )

@@ -56,7 +56,7 @@ class RadioReplenishmentEngineTest {
         assertEquals(1, candidateSource.callCount)
         assertEquals(3, result.appendedRecommendations.size)
         assertEquals(
-            listOf("first-adjacent", "first-missing", "first-safe"),
+            listOf("first-safe", "first-adjacent", "first-missing"),
             result.appendedRecommendations.map { it.track.id },
         )
         assertEquals(RadioBoundaryState.BALANCED, candidateSource.requests[0].boundaryState)
@@ -191,30 +191,36 @@ class RadioReplenishmentEngineTest {
     }
 
     @Test
-    fun replenish_fastStartStopsAfterFirstPlayableCandidate() {
+    fun replenish_fastStartRanksTheWholeCandidatePool() {
         val candidateSource = FakeRadioCandidateSource(
             responses = listOf(
                 listOf(
-                    suggestedTrack("first-playable", "Artist 1", RadioCandidateBucket.SAFE),
-                    suggestedTrack("second-should-not-match", "Artist 2", RadioCandidateBucket.ADJACENT),
-                    suggestedTrack("third-should-not-match", "Artist 3", RadioCandidateBucket.SURPRISE),
+                    suggestedTrack("first-lower-rank", "Artist 1", RadioCandidateBucket.SAFE).copy(
+                        matchedSeedIds = setOf("favorite-3"),
+                    ),
+                    suggestedTrack("second-best", "Artist 2", RadioCandidateBucket.SAFE).copy(
+                        matchedSeedIds = setOf("favorite-1"),
+                    ),
+                    suggestedTrack("third-middle-rank", "Artist 3", RadioCandidateBucket.SAFE).copy(
+                        matchedSeedIds = setOf("favorite-2"),
+                    ),
                 ),
             ),
         )
         val trackLookup = FakeRadioTrackLookup(
             matchedTracks = mapOf(
-                "first-playable" to track(
-                    id = "first-playable",
+                "first-lower-rank" to track(
+                    id = "first-lower-rank",
                     artist = "Artist 1",
-                    audioUrl = "https://audio.example/first-playable.mp3",
+                    audioUrl = "https://audio.example/first.mp3",
                 ),
-                "second-should-not-match" to track(
-                    id = "second-should-not-match",
+                "second-best" to track(
+                    id = "second-best",
                     artist = "Artist 2",
                     audioUrl = "https://audio.example/second.mp3",
                 ),
-                "third-should-not-match" to track(
-                    id = "third-should-not-match",
+                "third-middle-rank" to track(
+                    id = "third-middle-rank",
                     artist = "Artist 3",
                     audioUrl = "https://audio.example/third.mp3",
                 ),
@@ -228,7 +234,11 @@ class RadioReplenishmentEngineTest {
         val result = runBlocking {
             engine.replenish(
                 settings = AiServiceConfig(endpoint = "https://api.example", model = "test-model", accessKey = "secret"),
-                favorites = listOf(track("favorite-1", "Favorite Artist", audioUrl = "https://audio.example/favorite-1.mp3")),
+                favorites = listOf(
+                    track("favorite-1", "Favorite Artist 1", audioUrl = "https://audio.example/favorite-1.mp3"),
+                    track("favorite-2", "Favorite Artist 2", audioUrl = "https://audio.example/favorite-2.mp3"),
+                    track("favorite-3", "Favorite Artist 3", audioUrl = "https://audio.example/favorite-3.mp3"),
+                ),
                 history = RadioHistorySnapshot(),
                 session = RadioSessionState(sessionId = 31L),
                 minimumRequiredAppend = 1,
@@ -242,8 +252,11 @@ class RadioReplenishmentEngineTest {
         }
 
         assertEquals(1, result.appendedRecommendations.size)
-        assertEquals(listOf("first-playable"), result.appendedRecommendations.map { it.track.id })
-        assertEquals(listOf("first-playable"), trackLookup.matchedTitles)
+        assertEquals(listOf("second-best"), result.appendedRecommendations.map { it.track.id })
+        assertEquals(
+            setOf("first-lower-rank", "second-best", "third-middle-rank"),
+            trackLookup.matchedTitles.toSet(),
+        )
         assertTrue(trackLookup.resolveRequests.isEmpty())
     }
 
@@ -436,7 +449,7 @@ class RadioReplenishmentEngineTest {
             fastSource.requests[0].favoriteSeeds.map(Track::id),
         )
         assertEquals(
-            listOf("favorite-4", "favorite-5", "favorite-6"),
+            listOf("favorite-1", "favorite-4", "favorite-5"),
             fastSource.requests[1].favoriteSeeds.map(Track::id),
         )
     }
@@ -553,7 +566,7 @@ class RadioReplenishmentEngineTest {
             fastSource.requests[0].favoriteSeeds.map(Track::id),
         )
         assertEquals(
-            listOf("favorite-4", "favorite-1", "favorite-2"),
+            listOf("favorite-1", "favorite-4", "favorite-2"),
             fastSource.requests[1].favoriteSeeds.map(Track::id),
         )
     }

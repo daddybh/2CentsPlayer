@@ -112,16 +112,18 @@ class NeteaseSimiRepository(
         if (seeds.isEmpty()) return emptyList()
 
         val avoidTrackIds = request.avoidTrackIds
+        val negativeTrackIds = request.negativeTrackIds
         val avoidArtistKeys = request.avoidArtistKeys
 
         val suggestionsByKey = linkedMapOf<String, AiSuggestedTrack>()
         var seedsQueried = 0
         var rawCount = 0
         var duplicateInQueueCount = 0
+        var negativeFeedbackCount = 0
         var recentArtistCount = 0
         var mergedDuplicateCount = 0
         val perSeedLimit = ((request.rawCandidateLimit + seeds.size - 1) / seeds.size)
-            .coerceAtLeast(1)
+            .coerceAtLeast(MIN_PER_SEED_FETCH)
         val totalStart = System.currentTimeMillis()
         logger.debug("Netease simi: seeds=${seeds.size}, limit=${request.rawCandidateLimit}")
 
@@ -138,6 +140,7 @@ class NeteaseSimiRepository(
             rawCount += similarTracks.size
             val acceptedBeforeSeed = suggestionsByKey.size
             var seedDuplicateInQueueCount = 0
+            var seedNegativeFeedbackCount = 0
             var seedRecentArtistCount = 0
             var seedMergedDuplicateCount = 0
 
@@ -145,6 +148,11 @@ class NeteaseSimiRepository(
                 val dedupeKey = "${suggestion.title.lowercase().trim()}::${suggestion.artist.lowercase().trim()}"
 
                 val trackId = suggestion.resolvedTrack?.id.orEmpty()
+                if (trackId in negativeTrackIds) {
+                    negativeFeedbackCount++
+                    seedNegativeFeedbackCount++
+                    continue
+                }
                 if (trackId in avoidTrackIds) {
                     duplicateInQueueCount++
                     seedDuplicateInQueueCount++
@@ -186,6 +194,7 @@ class NeteaseSimiRepository(
                     "(id=$neteaseTrackId): raw=${similarTracks.size}, " +
                     "new=${suggestionsByKey.size - acceptedBeforeSeed}, " +
                     "duplicate_in_queue=$seedDuplicateInQueueCount, " +
+                    "negative_feedback=$seedNegativeFeedbackCount, " +
                     "recent_artist=$seedRecentArtistCount, " +
                     "merged_duplicate=$seedMergedDuplicateCount (${seedMs}ms)",
             )
@@ -196,6 +205,7 @@ class NeteaseSimiRepository(
         val yieldPercent = if (rawCount == 0) 0 else allSuggestions.size * 100 / rawCount
         logger.debug(
             "Netease simi total: raw=$rawCount, duplicate_in_queue=$duplicateInQueueCount, " +
+                "negative_feedback=$negativeFeedbackCount, " +
                 "recent_artist=$recentArtistCount, merged_duplicate=$mergedDuplicateCount, " +
                 "accepted=${allSuggestions.size}, yield=$yieldPercent%, " +
                 "queries=$seedsQueried, ${totalMs}ms",
@@ -219,6 +229,7 @@ class NeteaseSimiRepository(
                 "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
         const val COOKIE = "os=pc; appver=2.7.1.198277;"
         const val MAX_SEED_QUERIES = 3
+        const val MIN_PER_SEED_FETCH = 4
         const val SOURCE_KEY = "netease-simi"
     }
 }

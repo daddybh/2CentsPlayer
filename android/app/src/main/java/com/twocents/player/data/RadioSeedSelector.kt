@@ -8,12 +8,12 @@ class RadioSeedSelector(
         history: RadioHistorySnapshot,
         session: RadioSessionState,
     ): List<Track> {
-        if (favorites.isEmpty()) return emptyList()
+        if (favorites.isEmpty() || maximumSeeds <= 0) return emptyList()
 
         val latestFeedbackByTrack = history.events
             .associateBy(RadioFeedbackEvent::trackId)
 
-        return favorites.asSequence()
+        val rankedSeeds = favorites.asSequence()
             .filterNot { it.id in history.negativeTrackIds || it.id in session.skippedTrackIds }
             .mapIndexed { index, track ->
                 val feedbackScore = when (latestFeedbackByTrack[track.id]?.type) {
@@ -26,7 +26,6 @@ class RadioSeedSelector(
                     -> 0
                 }
                 val sessionScore = if (track.id in session.favoritedTrackIds) 35 else 0
-                val rotationScore = if (track.id in session.usedSeedIds) -1_000 else 0
                 val negativeArtistScore = if (
                     artistKey(track.artist) in history.negativeArtistKeys
                 ) {
@@ -39,7 +38,6 @@ class RadioSeedSelector(
                     score = (favorites.size - index).coerceAtLeast(1) +
                         feedbackScore +
                         sessionScore +
-                        rotationScore +
                         negativeArtistScore,
                     originalIndex = index,
                 )
@@ -50,9 +48,23 @@ class RadioSeedSelector(
                     .thenBy { it.track.id },
             )
             .distinctBy { artistKey(it.track.artist).ifBlank { it.track.id } }
-            .take(maximumSeeds)
+            .toList()
+
+        val anchor = rankedSeeds.firstOrNull() ?: return emptyList()
+        val explorationSeeds = rankedSeeds.asSequence()
+            .filterNot { it.track.id == anchor.track.id }
+            .sortedWith(
+                compareByDescending<ScoredSeed> { seed ->
+                    seed.score - if (seed.track.id in session.usedSeedIds) USED_SEED_PENALTY else 0
+                }
+                    .thenBy(ScoredSeed::originalIndex)
+                    .thenBy { it.track.id },
+            )
+            .take((maximumSeeds - 1).coerceAtLeast(0))
             .map(ScoredSeed::track)
             .toList()
+
+        return listOf(anchor.track) + explorationSeeds
     }
 
     private fun artistKey(artist: String): String {
@@ -69,4 +81,8 @@ class RadioSeedSelector(
         val score: Int,
         val originalIndex: Int,
     )
+
+    private companion object {
+        const val USED_SEED_PENALTY = 80
+    }
 }

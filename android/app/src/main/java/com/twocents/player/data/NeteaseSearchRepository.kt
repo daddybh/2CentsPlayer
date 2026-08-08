@@ -27,6 +27,7 @@ class NeteaseSearchRepository(
         val audioUrl: String,
         val durationMs: Long,
         val isPreviewOnly: Boolean,
+        val provider: String,
     )
 
     override fun searchTracks(
@@ -205,7 +206,8 @@ class NeteaseSearchRepository(
 
     fun resolvePlayableTrack(track: Track): Track {
         if (track.sourceTrackId().isBlank()) return track.withCanonicalIdentity()
-        val playbackDetails = resolvePlaybackDetails(track.sourceTrackId()) ?: return track.withCanonicalIdentity()
+        val playbackDetails = resolvePlaybackDetails(listOf(track))[track.sourceTrackId()]
+            ?: return track.withCanonicalIdentity()
         return track.withCanonicalIdentity().copy(
             audioUrl = playbackDetails.audioUrl,
             durationMs = playbackDetails.durationMs.takeIf { it > 0 } ?: track.durationMs,
@@ -218,7 +220,7 @@ class NeteaseSearchRepository(
         val trackIds = tracks.map { it.sourceTrackId() }.filter { it.isNotBlank() }
         if (trackIds.isEmpty()) return tracks
 
-        val playbackDetailsById = resolvePlaybackDetails(trackIds)
+        val playbackDetailsById = resolvePlaybackDetails(tracks)
         return tracks.map { track ->
             val playbackDetails = playbackDetailsById[track.sourceTrackId()]
             if (playbackDetails == null) {
@@ -232,37 +234,60 @@ class NeteaseSearchRepository(
         }
     }
 
-    private fun resolvePlaybackDetails(trackId: String): PlaybackDetails? {
-        return resolvePlaybackDetails(listOf(trackId))[trackId]
-    }
-
-    private fun resolvePlaybackDetails(trackIds: List<String>): Map<String, PlaybackDetails> {
+    private fun resolvePlaybackDetails(tracks: List<Track>): Map<String, PlaybackDetails> {
+        val trackIds = tracks.map { it.sourceTrackId() }.filter(String::isNotBlank).distinct()
         if (trackIds.isEmpty()) return emptyMap()
+        val catalogDurationById = tracks.associate { track ->
+            track.sourceTrackId() to track.durationMs
+        }
 
         val officialStart = System.currentTimeMillis()
         val officialPlaybackDetails = runCatching {
             resolveOfficialPlaybackDetails(trackIds)
         }.getOrDefault(emptyMap())
         val officialMs = System.currentTimeMillis() - officialStart
-        val officialResolved = officialPlaybackDetails.count { !it.value.isPreviewOnly }
-        logger.debug("    Netease官方: ${officialResolved}/${trackIds.size} 完整, ${officialPlaybackDetails.size - officialResolved} 试听 (${officialMs}ms)")
+        val acceptedOfficialPlaybackDetails = officialPlaybackDetails.filter { (trackId, details) ->
+            isAcceptablePlaybackDetails(
+                details = details,
+                catalogDurationMs = catalogDurationById[trackId] ?: 0L,
+            )
+        }
+        val officialPreviewCount = officialPlaybackDetails.count { it.value.isPreviewOnly }
+        val officialRejectedCount = officialPlaybackDetails.size -
+            acceptedOfficialPlaybackDetails.size -
+            officialPreviewCount
+        logger.debug(
+            "    Netease官方: ${acceptedOfficialPlaybackDetails.size}/${trackIds.size} 完整, " +
+                "$officialPreviewCount 试听, $officialRejectedCount 时长异常 (${officialMs}ms)",
+        )
 
         val fallbackTrackIds = trackIds.filter { trackId ->
-            val details = officialPlaybackDetails[trackId]
-            details == null || details.isPreviewOnly
+            trackId !in acceptedOfficialPlaybackDetails
         }
-        if (fallbackTrackIds.isEmpty()) return officialPlaybackDetails
-
-        val fallbackStart = System.currentTimeMillis()
-        val fallbackPlaybackDetails = resolveThirdPartyPlaybackDetails(fallbackTrackIds)
-        val fallbackMs = System.currentTimeMillis() - fallbackStart
-        logger.debug("    Netease第三方: ${fallbackPlaybackDetails.size}/${fallbackTrackIds.size} 成功 (${fallbackMs}ms)")
+        val fallbackPlaybackDetails = if (fallbackTrackIds.isEmpty()) {
+            emptyMap()
+        } else {
+            val fallbackStart = System.currentTimeMillis()
+            val resolvedFallbacks = resolveThirdPartyPlaybackDetails(
+                trackIds = fallbackTrackIds,
+                catalogDurationById = catalogDurationById,
+            )
+            val fallbackMs = System.currentTimeMillis() - fallbackStart
+            logger.debug("    Netease第三方: ${resolvedFallbacks.size}/${fallbackTrackIds.size} 成功 (${fallbackMs}ms)")
+            resolvedFallbacks
+        }
 
         return buildMap(trackIds.size) {
             trackIds.forEach { trackId ->
-                val preferredDetails = fallbackPlaybackDetails[trackId] ?: officialPlaybackDetails[trackId]
+                val preferredDetails = fallbackPlaybackDetails[trackId] ?: acceptedOfficialPlaybackDetails[trackId]
                 if (preferredDetails != null) {
+                    logger.debug(
+                        "    Audio resolved: track=$trackId, provider=${preferredDetails.provider}, " +
+                            "duration=${preferredDetails.durationMs}ms",
+                    )
                     put(trackId, preferredDetails)
+                } else {
+                    logger.debug("    Audio unavailable: track=$trackId, reason=no_full_source")
                 }
             }
         }
@@ -321,6 +346,7 @@ class NeteaseSearchRepository(
                             audioUrl = resolvedUrl.replace("http://", "https://"),
                             durationMs = item.optLong("time"),
                             isPreviewOnly = item.optJSONObject("freeTrialInfo") != null,
+                            provider = "netease-official",
                         ),
                     )
                 }
@@ -368,13 +394,19 @@ class NeteaseSearchRepository(
         }
     }
 
-    private fun resolveThirdPartyPlaybackDetails(trackIds: List<String>): Map<String, PlaybackDetails> {
+    private fun resolveThirdPartyPlaybackDetails(
+        trackIds: List<String>,
+        catalogDurationById: Map<String, Long>,
+    ): Map<String, PlaybackDetails> {
         if (trackIds.isEmpty()) return emptyMap()
         val executor = Executors.newFixedThreadPool(trackIds.size.coerceAtMost(4))
         try {
             val futures = trackIds.map { trackId ->
                 executor.submit<Pair<String, PlaybackDetails>?> {
-                    resolveThirdPartyPlaybackDetails(trackId)?.let { trackId to it }
+                    resolveThirdPartyPlaybackDetails(
+                        trackId = trackId,
+                        catalogDurationMs = catalogDurationById[trackId] ?: 0L,
+                    )?.let { trackId to it }
                 }
             }
             return buildMap(trackIds.size) {
@@ -389,8 +421,49 @@ class NeteaseSearchRepository(
         }
     }
 
-    private fun resolveThirdPartyPlaybackDetails(trackId: String): PlaybackDetails? {
-        return resolveCunyuPlaybackDetails(trackId) ?: resolveCggPlaybackDetails(trackId)
+    private fun resolveThirdPartyPlaybackDetails(
+        trackId: String,
+        catalogDurationMs: Long,
+    ): PlaybackDetails? {
+        val cunyuDetails = resolveCunyuPlaybackDetails(trackId)
+        if (
+            cunyuDetails != null &&
+            isAcceptablePlaybackDetails(cunyuDetails, catalogDurationMs)
+        ) {
+            return cunyuDetails
+        }
+        if (cunyuDetails != null) {
+            logger.debug(
+                "    音源拒绝: track=$trackId, provider=cunyu, " +
+                    "catalog=${catalogDurationMs}ms, resolved=${cunyuDetails.durationMs}ms",
+            )
+        }
+
+        val cggDetails = resolveCggPlaybackDetails(trackId)
+        if (
+            cggDetails != null &&
+            isAcceptablePlaybackDetails(cggDetails, catalogDurationMs)
+        ) {
+            return cggDetails
+        }
+        if (cggDetails != null) {
+            logger.debug(
+                "    音源拒绝: track=$trackId, provider=cgg, " +
+                    "catalog=${catalogDurationMs}ms, resolved=${cggDetails.durationMs}ms",
+            )
+        }
+        return null
+    }
+
+    private fun isAcceptablePlaybackDetails(
+        details: PlaybackDetails,
+        catalogDurationMs: Long,
+    ): Boolean {
+        return !details.isPreviewOnly &&
+            !isSuspiciousPlaybackDuration(
+                catalogDurationMs = catalogDurationMs,
+                resolvedDurationMs = details.durationMs,
+            )
     }
 
     private fun resolveCunyuPlaybackDetails(trackId: String): PlaybackDetails? {
@@ -418,6 +491,7 @@ class NeteaseSearchRepository(
                     audioUrl = resolvedUrl.replace("http://", "https://"),
                     durationMs = extractDurationMsFromLyric(root.optString("lyric")),
                     isPreviewOnly = false,
+                    provider = "cunyu",
                 )
             }
         }.getOrNull()
@@ -451,6 +525,7 @@ class NeteaseSearchRepository(
                     audioUrl = resolvedUrl.replace("http://", "https://"),
                     durationMs = parseClockDurationMs(data.optString("duration")),
                     isPreviewOnly = false,
+                    provider = "cgg",
                 )
             }
         }.getOrNull()

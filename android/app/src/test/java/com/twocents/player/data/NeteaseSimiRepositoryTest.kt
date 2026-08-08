@@ -41,7 +41,13 @@ class NeteaseSimiRepositoryTest {
 
     @Test
     fun requestRadioCandidates_logsFilteringYield() {
-        server.enqueue(simiResponse(song("queued", "Queued"), song("recent", "Recent")))
+        server.enqueue(
+            simiResponse(
+                song("queued", "Queued"),
+                song("negative", "Negative"),
+                song("recent", "Recent"),
+            ),
+        )
         val logger = RecordingLogger()
         val repository = NeteaseSimiRepository(
             endpoint = server.url("/simi").toString(),
@@ -49,6 +55,7 @@ class NeteaseSimiRepositoryTest {
         )
         val request = requestWithSeeds("seed-1").copy(
             avoidTrackIds = setOf("netease:queued"),
+            negativeTrackIds = setOf("netease:negative"),
             avoidArtistKeys = setOf("artist recent"),
         )
 
@@ -57,13 +64,35 @@ class NeteaseSimiRepositoryTest {
         assertTrue(result.isEmpty())
         assertTrue(
             logger.messages.any {
-                "raw=2" in it &&
+                "raw=3" in it &&
                     "duplicate_in_queue=1" in it &&
+                    "negative_feedback=1" in it &&
                     "recent_artist=1" in it &&
                     "accepted=0" in it &&
                     "yield=0%" in it
             },
         )
+    }
+
+    @Test
+    fun requestRadioCandidates_fetchesPastBlockedTopResultBeforeApplyingQuota() {
+        server.enqueue(
+            simiResponse(
+                song("negative", "Negative"),
+                song("allowed", "Allowed"),
+            ),
+        )
+        val repository = NeteaseSimiRepository(endpoint = server.url("/simi").toString())
+        val request = requestWithSeeds("seed-1").copy(
+            rawCandidateLimit = 1,
+            negativeTrackIds = setOf("netease:negative"),
+        )
+
+        val result = repository.requestRadioCandidates(AiServiceConfig(), request)
+        val requestBody = server.takeRequest().body.readUtf8()
+
+        assertEquals(listOf("netease:allowed"), result.map { it.resolvedTrack?.id })
+        assertTrue("limit=4" in requestBody)
     }
 
     private fun requestWithSeeds(vararg ids: String): RadioRecommendationRequest {

@@ -19,6 +19,7 @@ class RadioCandidateScorer {
                 val first = duplicates.first()
                 val matchedSeedIds = duplicates.flatMapTo(linkedSetOf()) { it.matchedSeedIds }
                 val retrievalSources = duplicates.flatMapTo(linkedSetOf()) { it.retrievalSources }
+                val sourceRank = duplicates.minOf(RadioResolvedCandidate::sourceRank)
                 val track = first.recommendation.track
                 val artist = artistKey(track.artist)
                 val bestSeedRank = matchedSeedIds.mapNotNull(seedRanks::get).minOrNull()
@@ -46,6 +47,7 @@ class RadioCandidateScorer {
                 first.copy(
                     matchedSeedIds = matchedSeedIds,
                     retrievalSources = retrievalSources,
+                    sourceRank = sourceRank,
                     score = seedScore +
                         multiSeedScore +
                         positiveArtistScore +
@@ -58,6 +60,7 @@ class RadioCandidateScorer {
             }
             .sortedWith(
                 compareByDescending<RadioResolvedCandidate>(RadioResolvedCandidate::score)
+                    .thenBy(RadioResolvedCandidate::sourceRank)
                     .thenBy(RadioResolvedCandidate::stableKey),
             )
     }

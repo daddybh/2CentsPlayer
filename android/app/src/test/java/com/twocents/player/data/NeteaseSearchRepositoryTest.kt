@@ -128,7 +128,7 @@ class NeteaseSearchRepositoryTest {
     }
 
     @Test
-    fun resolvePlayableTracks_usesThirdPartyFallbackWhenOfficialRequestFails() {
+    fun resolvePlayableTracks_rejectsSuspiciouslyShortThirdPartyFallback() {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 return when (request.requestUrl?.encodedPath) {
@@ -147,8 +147,8 @@ class NeteaseSearchRepositoryTest {
 
         val resolvedTrack = repository.resolvePlayableTracks(listOf(track(id = "123"))).single()
 
-        assertEquals("https://fallback.example/recovered.mp3", resolvedTrack.audioUrl)
-        assertEquals(42000L, resolvedTrack.durationMs)
+        assertTrue(resolvedTrack.audioUrl.isBlank())
+        assertEquals(180000L, resolvedTrack.durationMs)
 
         val officialRequest = server.takeRequest()
         val fallbackRequest = server.takeRequest()
@@ -156,12 +156,74 @@ class NeteaseSearchRepositoryTest {
         assertEquals("/163music_play", fallbackRequest.requestUrl?.encodedPath)
     }
 
+    @Test
+    fun resolvePlayableTracks_triesNextFallbackAfterSuspiciouslyShortResult() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return when (request.requestUrl?.encodedPath) {
+                    "/eapi/song/enhance/player/url/v1" -> MockResponse().setResponseCode(500)
+                    "/163music_play" -> MockResponse()
+                        .setResponseCode(200)
+                        .setBody("""{"song_file_url":"http://fallback.example/clip.mp3","lyric":"[00:42.00]line"}""")
+
+                    "/api/netease/music_v1.php" -> MockResponse()
+                        .setResponseCode(200)
+                        .setBody("""{"data":{"url":"http://fallback-cgg.example/full.mp3","duration":"03:00"}}""")
+
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val resolvedTrack = repository.resolvePlayableTracks(listOf(track(id = "123"))).single()
+
+        assertEquals("https://fallback-cgg.example/full.mp3", resolvedTrack.audioUrl)
+        assertEquals(180000L, resolvedTrack.durationMs)
+    }
+
+    @Test
+    fun resolvePlayableTracks_doesNotUseOfficialPreviewWhenFullFallbackFails() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                return when (request.requestUrl?.encodedPath) {
+                    "/eapi/song/enhance/player/url/v1" -> MockResponse()
+                        .setResponseCode(200)
+                        .setBody(
+                            """
+                            {
+                              "data": [
+                                {
+                                  "id": 123,
+                                  "url": "http://official.example/preview.mp3",
+                                  "time": 30000,
+                                  "freeTrialInfo": {"start": 0, "end": 30000}
+                                }
+                              ]
+                            }
+                            """.trimIndent(),
+                        )
+
+                    "/163music_play",
+                    "/api/netease/music_v1.php",
+                    -> MockResponse().setResponseCode(500)
+
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val resolvedTrack = repository.resolvePlayableTracks(listOf(track(id = "123"))).single()
+
+        assertTrue(resolvedTrack.audioUrl.isBlank())
+        assertEquals(180000L, resolvedTrack.durationMs)
+    }
+
     private fun track(id: String): Track {
         return Track(
             id = id,
             title = "Test Song",
             artist = "Test Artist",
-            durationMs = 1L,
+            durationMs = 180_000L,
         )
     }
 

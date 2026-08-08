@@ -124,6 +124,31 @@ class PlayerViewModelTest {
     }
 
     @Test
+    fun suspiciousShortRadioAudio_skipsWithoutRecordingUserDislike() {
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val clippedTrack = track(id = "radio-clip", title = "Radio Clip", durationMs = 180_000L)
+        val nextTrack = track(id = "radio-next", title = "Radio Next", durationMs = 200_000L)
+        val queue = listOf(clippedTrack, nextTrack)
+        viewModel.setPrivateField("radioSession", radioSession(queue))
+        viewModel.applyPlaybackSource("AI")
+
+        viewModel.onPlayerQueueChanged(
+            queue = queue,
+            currentIndex = 0,
+            positionMs = 0L,
+            durationMs = 42_000L,
+            isPlaying = true,
+        )
+
+        assertEquals(nextTrack.id, viewModel.playbackState.currentTrack?.id)
+        val history = RadioHistoryStore(
+            application.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE),
+        ).loadSnapshot(System.currentTimeMillis())
+        assertFalse(history.events.any { event -> event.trackId == clippedTrack.id })
+    }
+
+    @Test
     fun dislikeCurrentRadioTrack_canUndoRecommendationFeedback() {
         val application = FakeApplication()
         val viewModel = PlayerViewModel(application)
@@ -133,7 +158,7 @@ class PlayerViewModelTest {
         viewModel.onPlayerQueueChanged(
             queue = queue,
             currentIndex = 0,
-            positionMs = 5_000L,
+            positionMs = 90_000L,
             durationMs = dislikedTrack.durationMs,
             isPlaying = true,
         )
@@ -148,6 +173,10 @@ class PlayerViewModelTest {
         ).loadSnapshot(System.currentTimeMillis())
         assertEquals(dislikedTrack.id, notice?.trackId)
         assertTrue(dislikedTrack.id in historyAfterDislike.negativeTrackIds)
+        assertEquals(
+            RadioFeedbackType.STRONG_NEGATIVE,
+            historyAfterDislike.events.last { it.trackId == dislikedTrack.id }.type,
+        )
         assertTrue(
             dislikedTrack.id in (
                 viewModel.getPrivateField("radioSession") as RadioSessionState
@@ -218,7 +247,13 @@ class PlayerViewModelTest {
         )
         advanceUntilIdle()
         var attempts = 0
-        while (neteaseSource.resolveCalls.size < 2 && attempts < 50) {
+        while (
+            (
+                neteaseSource.resolveCalls.size < 3 ||
+                    (viewModel.pendingPlayerCommand as? PlayerCommand.LoadTrack)?.queue?.size != 3
+            ) &&
+            attempts < 50
+        ) {
             advanceUntilIdle()
             Thread.sleep(20L)
             attempts += 1
@@ -227,10 +262,124 @@ class PlayerViewModelTest {
         assertEquals(
             listOf(
                 listOf("netease:start"),
-                listOf("netease:next-1", "netease:next-2"),
+                listOf("netease:next-1"),
+                listOf("netease:next-2"),
             ),
             neteaseSource.resolveCalls,
         )
+    }
+
+    @Test
+    fun prepareTrackForPlayback_neverEmitsUnresolvedMediaItems() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val viewModel = PlayerViewModel(FakeApplication())
+        val queue = listOf(
+            track(id = "ready", title = "Ready"),
+            unresolvedTrack(id = "pending"),
+        )
+
+        viewModel.invokePrepareTrackForPlayback(
+            queue = queue,
+            index = 0,
+            playWhenReady = true,
+            startPositionMs = 0L,
+            sourceName = "AI",
+        )
+
+        val command = viewModel.pendingPlayerCommand as PlayerCommand.LoadTrack
+        assertEquals(listOf("netease:ready"), command.queue.map { it.id })
+        assertTrue(command.queue.all { it.audioUrl.isNotBlank() })
+        assertEquals(0, command.index)
+    }
+
+    @Test
+    fun onPlayerError_reResolvesFailedTrackAndKeepsAutoPlayIntent() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val neteaseSource = RecordingMusicSourceRepository(source = TrackSource.NETEASE)
+        viewModel.setPrivateField(
+            "musicLibraryRepository",
+            MusicLibraryRepository(
+                neteaseRepository = neteaseSource,
+                kuwoRepository = RecordingMusicSourceRepository(source = TrackSource.KUWO),
+            ),
+        )
+        val failedTrack = track(id = "expired", title = "Expired").copy(
+            album = "Expired Album",
+            coverUrl = "https://cover.example/expired.jpg",
+        )
+        viewModel.onPlayerQueueChanged(
+            queue = listOf(failedTrack),
+            currentIndex = 0,
+            positionMs = 18L,
+            durationMs = failedTrack.durationMs,
+            isPlaying = false,
+            playWhenReady = true,
+        )
+        viewModel.applyPlaybackSource("AI")
+
+        viewModel.onPlayerError("Source error")
+        advanceUntilIdle()
+        var attempts = 0
+        while (viewModel.playbackState.currentTrack?.audioUrl.isNullOrBlank() && attempts < 50) {
+            advanceUntilIdle()
+            Thread.sleep(20L)
+            attempts += 1
+        }
+
+        val command = viewModel.pendingPlayerCommand as PlayerCommand.LoadTrack
+        assertEquals("netease:expired", command.queue[command.index].id)
+        assertTrue(command.queue.all { it.audioUrl.isNotBlank() })
+        assertTrue(command.playWhenReady)
+        assertEquals(0L, command.startPositionMs)
+    }
+
+    @Test
+    fun onPlayerError_afterRetry_skipsToNextPlayableTrack() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val application = FakeApplication()
+        val viewModel = PlayerViewModel(application)
+        val neteaseSource = RecordingMusicSourceRepository(source = TrackSource.NETEASE)
+        viewModel.setPrivateField(
+            "musicLibraryRepository",
+            MusicLibraryRepository(
+                neteaseRepository = neteaseSource,
+                kuwoRepository = RecordingMusicSourceRepository(source = TrackSource.KUWO),
+            ),
+        )
+        val first = track(id = "broken", title = "Broken").copy(
+            album = "Broken Album",
+            coverUrl = "https://cover.example/broken.jpg",
+        )
+        val next = track(id = "next", title = "Next").copy(
+            album = "Next Album",
+            coverUrl = "https://cover.example/next.jpg",
+        )
+        viewModel.onPlayerQueueChanged(
+            queue = listOf(first, next),
+            currentIndex = 0,
+            positionMs = 10L,
+            durationMs = first.durationMs,
+            isPlaying = false,
+            playWhenReady = true,
+        )
+        viewModel.applyPlaybackSource("AI")
+
+        viewModel.onPlayerError("Source error")
+        advanceUntilIdle()
+        var attempts = 0
+        while (viewModel.playbackState.currentTrack?.audioUrl.isNullOrBlank() && attempts < 50) {
+            advanceUntilIdle()
+            Thread.sleep(20L)
+            attempts += 1
+        }
+        viewModel.onPlayerError("Source error")
+        advanceUntilIdle()
+
+        val command = viewModel.pendingPlayerCommand as PlayerCommand.LoadTrack
+        assertEquals("netease:next", command.queue[command.index].id)
+        assertTrue(command.playWhenReady)
     }
 
     @Test
@@ -251,6 +400,55 @@ class PlayerViewModelTest {
         assertFalse(viewModel.playbackState.isPlaying)
         assertTrue(viewModel.playbackState.playWhenReady)
         assertTrue(viewModel.playbackState.isPreparing)
+    }
+
+    @Test
+    fun onPlayerQueueChanged_ignoresTransientEmptyQueueWhileRadioIsPreparing() {
+        val viewModel = PlayerViewModel(FakeApplication())
+        val preparingTrack = unresolvedTrack("preparing")
+        viewModel.onPlayerQueueChanged(
+            queue = listOf(preparingTrack),
+            currentIndex = 0,
+            positionMs = 0L,
+            durationMs = preparingTrack.durationMs,
+            isPlaying = false,
+            playWhenReady = true,
+            isPreparing = true,
+        )
+        viewModel.setPrivateField("radioSession", radioSession(listOf(preparingTrack)))
+        viewModel.applyPlaybackSource("AI")
+
+        viewModel.onPlayerQueueChanged(
+            queue = emptyList(),
+            currentIndex = 0,
+            positionMs = 0L,
+            durationMs = 0L,
+            isPlaying = false,
+        )
+
+        assertEquals("AI", viewModel.getPlaybackSource())
+        assertTrue(viewModel.playbackState.isPreparing)
+        assertTrue(viewModel.playbackState.playWhenReady)
+        assertEquals(preparingTrack.id, viewModel.playbackState.currentTrack?.id)
+        assertTrue(viewModel.getPrivateField("radioSession") is RadioSessionState)
+    }
+
+    @Test
+    fun onPlayerQueueChanged_ignoresInitialEmptyQueueBeforeRadioResultsArrive() {
+        val viewModel = PlayerViewModel(FakeApplication())
+        viewModel.setPrivateField("radioSession", RadioSessionState(sessionId = 1L, isLoadingMore = true))
+        viewModel.applyPlaybackSource("AI")
+
+        viewModel.onPlayerQueueChanged(
+            queue = emptyList(),
+            currentIndex = 0,
+            positionMs = 0L,
+            durationMs = 0L,
+            isPlaying = false,
+        )
+
+        assertEquals("AI", viewModel.getPlaybackSource())
+        assertTrue(viewModel.getPrivateField("radioSession") is RadioSessionState)
     }
 
     @Test
@@ -304,7 +502,8 @@ class PlayerViewModelTest {
         assertEquals("netease:playable-next", viewModel.playbackState.currentTrack?.id)
         assertTrue(viewModel.playbackState.currentTrack?.audioUrl?.isNotBlank() == true)
         val command = viewModel.pendingPlayerCommand as PlayerCommand.LoadTrack
-        assertEquals(1, command.index)
+        assertEquals(0, command.index)
+        assertTrue(command.queue.all { it.audioUrl.isNotBlank() })
     }
 
     @Test

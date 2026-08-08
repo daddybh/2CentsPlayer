@@ -74,10 +74,18 @@ fun BindPlayer(
 
         when (val command = pendingCommand) {
             is PlayerCommand.LoadTrack -> {
+                val requestedTrackId = command.queue.getOrNull(command.index)?.id
+                val playableQueue = command.queue.filter { track -> track.audioUrl.isNotBlank() }
+                val playableIndex = playableQueue.indexOfFirst { track -> track.id == requestedTrackId }
+                if (playableIndex < 0) {
+                    viewModel.onPlayerCommandHandled(command.id)
+                    viewModel.onPlayerError("音频地址不可用，正在尝试恢复播放。")
+                    return@LaunchedEffect
+                }
                 player.playWhenReady = command.playWhenReady
                 player.setMediaItems(
-                    command.queue.map { it.toMediaItem() },
-                    command.index,
+                    playableQueue.map { it.toMediaItem() },
+                    playableIndex,
                     command.startPositionMs,
                 )
                 player.prepare()

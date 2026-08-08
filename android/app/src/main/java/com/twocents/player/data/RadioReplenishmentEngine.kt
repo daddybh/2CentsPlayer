@@ -111,7 +111,7 @@ class RadioReplenishmentEngine(
                 logger.debug("  [解析] 批量匹配模式 (${suggestions.size} 条)")
                 val matchStart = System.currentTimeMillis()
                 val matchedCandidates = coroutineScope {
-                    suggestions.map { suggestion ->
+                    suggestions.mapIndexed { sourceRank, suggestion ->
                         async(Dispatchers.IO) {
                             val matchedTrack = suggestion.resolvedTrack ?: trackLookup.findBestMatchTrack(
                                 title = suggestion.title,
@@ -126,6 +126,7 @@ class RadioReplenishmentEngine(
                                 bucket = suggestion.bucket,
                                 matchedSeedIds = suggestion.matchedSeedIds,
                                 retrievalSources = suggestion.retrievalSources,
+                                sourceRank = sourceRank,
                             )
                         }
                     }.awaitAll().filterNotNull()
@@ -216,35 +217,41 @@ class RadioReplenishmentEngine(
         existingQueue: List<AiRecommendedTrack>,
         boundaryState: RadioBoundaryState,
     ): List<RadioResolvedCandidate> {
-        for (suggestion in suggestions) {
-            val matchedTrack = suggestion.resolvedTrack ?: trackLookup.findBestMatchTrack(
-                title = suggestion.title,
-                artist = suggestion.artist,
-            ) ?: continue
+        val matchedCandidates = coroutineScope {
+            suggestions.mapIndexed { sourceRank, suggestion ->
+                async(Dispatchers.IO) {
+                    val matchedTrack = suggestion.resolvedTrack ?: trackLookup.findBestMatchTrack(
+                        title = suggestion.title,
+                        artist = suggestion.artist,
+                    ) ?: return@async null
 
-            val candidate = RadioResolvedCandidate(
-                recommendation = AiRecommendedTrack(
-                    track = matchedTrack,
-                    reason = suggestion.reason,
-                ),
-                bucket = suggestion.bucket,
-                matchedSeedIds = suggestion.matchedSeedIds,
-                retrievalSources = suggestion.retrievalSources,
-            )
-            val scoredCandidate = scorer.score(listOf(candidate), request).firstOrNull() ?: continue
-
-            val appended = composer.compose(
-                existingQueue = existingQueue,
-                candidates = listOf(scoredCandidate),
-                boundaryState = boundaryState,
-            )
-            if (appended.isNotEmpty()) {
-                logger.debug("  [快速启动] 找到候选: ${matchedTrack.title} - ${matchedTrack.artist}, hasUrl=${matchedTrack.audioUrl.isNotBlank()}")
-                return appended
-            }
+                    RadioResolvedCandidate(
+                        recommendation = AiRecommendedTrack(
+                            track = matchedTrack,
+                            reason = suggestion.reason,
+                        ),
+                        bucket = suggestion.bucket,
+                        matchedSeedIds = suggestion.matchedSeedIds,
+                        retrievalSources = suggestion.retrievalSources,
+                        sourceRank = sourceRank,
+                    )
+                }
+            }.awaitAll().filterNotNull()
         }
+        val rankedCandidates = scorer.score(matchedCandidates, request)
+        val selected = composer.compose(
+            existingQueue = existingQueue,
+            candidates = rankedCandidates,
+            boundaryState = boundaryState,
+        ).firstOrNull() ?: return emptyList()
 
-        return emptyList()
+        val selectedTrack = selected.recommendation.track
+        logger.debug(
+            "  [快速启动] 比较 ${rankedCandidates.size} 首后选择: " +
+                "${selectedTrack.title} - ${selectedTrack.artist}, score=${selected.score}, " +
+                "sourceRank=${selected.sourceRank}, hasUrl=${selectedTrack.audioUrl.isNotBlank()}",
+        )
+        return listOf(selected)
     }
 
     companion object {

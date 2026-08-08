@@ -16,38 +16,54 @@ class RadioHistoryStore(
             persistEvents(retainedEvents)
         }
 
+        val effectiveEvents = retainedEvents.filter { event ->
+            event.isEffectiveAt(nowMs)
+        }
         val positiveTrackIds = linkedSetOf<String>()
         val negativeTrackIds = linkedSetOf<String>()
         val positiveArtistKeys = linkedSetOf<String>()
         val negativeArtistKeys = linkedSetOf<String>()
 
-        retainedEvents.forEach { event ->
+        retainedEvents.associateBy(RadioFeedbackEvent::trackId).values.forEach { event ->
+            if (!event.isEffectiveAt(nowMs)) return@forEach
             when (event.type) {
                 RadioFeedbackType.STRONG_POSITIVE,
                 RadioFeedbackType.POSITIVE,
                 RadioFeedbackType.REPLAY_POSITIVE,
                 -> {
                     positiveTrackIds += event.trackId
-                    positiveArtistKeys += event.artistKey
                 }
 
                 RadioFeedbackType.MILD_NEGATIVE,
                 RadioFeedbackType.STRONG_NEGATIVE,
                 -> {
                     negativeTrackIds += event.trackId
-                    negativeArtistKeys += event.artistKey
                 }
             }
         }
 
+        retainedEvents.associateBy(RadioFeedbackEvent::artistKey).values.forEach { event ->
+            if (!event.isEffectiveAt(nowMs)) return@forEach
+            when (event.type) {
+                RadioFeedbackType.STRONG_POSITIVE,
+                RadioFeedbackType.POSITIVE,
+                RadioFeedbackType.REPLAY_POSITIVE,
+                -> positiveArtistKeys += event.artistKey
+
+                RadioFeedbackType.MILD_NEGATIVE,
+                RadioFeedbackType.STRONG_NEGATIVE,
+                -> negativeArtistKeys += event.artistKey
+            }
+        }
+
         return RadioHistorySnapshot(
-            events = retainedEvents,
+            events = effectiveEvents,
             positiveTrackIds = positiveTrackIds,
             negativeTrackIds = negativeTrackIds,
             positiveArtistKeys = positiveArtistKeys,
             negativeArtistKeys = negativeArtistKeys,
-            recentTrackIds = retainedEvents.asReversed().map { it.trackId }.distinct(),
-            recentArtistKeys = retainedEvents.asReversed().map { it.artistKey }.distinct(),
+            recentTrackIds = effectiveEvents.asReversed().map { it.trackId }.distinct(),
+            recentArtistKeys = effectiveEvents.asReversed().map { it.artistKey }.distinct(),
         )
     }
 
@@ -72,6 +88,35 @@ class RadioHistoryStore(
         events.removeAt(eventIndex)
         persistEvents(pruneAndBound(events, clock()))
         return true
+    }
+
+    fun loadRecentSeedIds(): List<String> {
+        val raw = preferences.getString(KEY_RECENT_SEED_IDS, null) ?: return emptyList()
+        val array = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+        return buildList(array.length()) {
+            for (index in 0 until array.length()) {
+                array.optString(index)
+                    .trim()
+                    .takeIf(String::isNotBlank)
+                    ?.let(::add)
+            }
+        }.distinct().takeLast(MAX_RECENT_SEEDS)
+    }
+
+    fun recordSeedExposure(seedIds: Collection<String>) {
+        val normalizedSeedIds = seedIds
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+        if (normalizedSeedIds.isEmpty()) return
+
+        val exposedSet = normalizedSeedIds.toSet()
+        val updatedSeedIds = (
+            loadRecentSeedIds().filterNot { it in exposedSet } + normalizedSeedIds
+        ).takeLast(MAX_RECENT_SEEDS)
+        val array = JSONArray()
+        updatedSeedIds.forEach(array::put)
+        preferences.edit().putString(KEY_RECENT_SEED_IDS, array.toString()).apply()
     }
 
     private fun readEvents(): List<RadioFeedbackEvent> {
@@ -124,12 +169,20 @@ class RadioHistoryStore(
         preferences.edit().putString(KEY_EVENTS, array.toString()).apply()
     }
 
+    private fun RadioFeedbackEvent.isEffectiveAt(nowMs: Long): Boolean {
+        return type != RadioFeedbackType.MILD_NEGATIVE ||
+            timestampMs >= nowMs - MILD_NEGATIVE_EFFECTIVE_AGE_MS
+    }
+
     companion object {
         const val MAX_EVENTS = 400
         const val MAX_EVENT_AGE_MS = 30L * 24L * 60L * 60L * 1000L
+        const val MILD_NEGATIVE_EFFECTIVE_AGE_MS = 7L * 24L * 60L * 60L * 1000L
+        const val MAX_RECENT_SEEDS = 9
 
         private const val PREFERENCES_NAME = "two_cents_player"
         private const val KEY_EVENTS = "radio_feedback_events_v1"
+        private const val KEY_RECENT_SEED_IDS = "radio_recent_seed_ids_v1"
         private const val KEY_TRACK_ID = "trackId"
         private const val KEY_ARTIST_KEY = "artistKey"
         private const val KEY_TYPE = "type"

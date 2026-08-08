@@ -50,7 +50,7 @@ class RadioSeedSelectorTest {
     }
 
     @Test
-    fun select_rotatesAwayFromSeedsAlreadyUsedInThisSession() {
+    fun select_keepsAnchorWhileRotatingExplorationSeeds() {
         val favorites = (1..6).map { index ->
             track("fav-$index", "Artist $index")
         }
@@ -64,7 +64,7 @@ class RadioSeedSelectorTest {
             ),
         )
 
-        assertEquals(listOf("fav-4", "fav-5", "fav-6"), result.map(Track::id))
+        assertEquals(listOf("fav-1", "fav-4", "fav-5"), result.map(Track::id))
     }
 
     @Test

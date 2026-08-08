@@ -69,12 +69,65 @@ class RadioHistoryStoreTest {
 
         val snapshot = store.loadSnapshot(nowMs)
 
-        assertEquals(setOf("t-1", "t-2", "t-3"), snapshot.positiveTrackIds)
+        assertEquals(setOf("t-1", "t-3"), snapshot.positiveTrackIds)
         assertEquals(setOf("t-2", "t-4", "t-5"), snapshot.negativeTrackIds)
-        assertEquals(setOf("a-1", "a-2", "a-3"), snapshot.positiveArtistKeys)
+        assertEquals(setOf("a-1", "a-3"), snapshot.positiveArtistKeys)
         assertEquals(setOf("a-2", "a-4", "a-5"), snapshot.negativeArtistKeys)
         assertTrue(snapshot.recentTrackIds.contains("t-5"))
         assertTrue(snapshot.recentArtistKeys.contains("a-5"))
+    }
+
+    @Test
+    fun loadSnapshot_latestPositiveOverridesEarlierNegativeSignal() {
+        val nowMs = 1_000_000_000_000L
+        val eventsJson = JSONArray().apply {
+            put(event("target", "artist", RadioFeedbackType.STRONG_NEGATIVE, nowMs - 2_000L))
+            put(event("target", "artist", RadioFeedbackType.STRONG_POSITIVE, nowMs - 1_000L))
+        }
+        val store = RadioHistoryStore(
+            FakeSharedPreferences(mutableMapOf(KEY_EVENTS to eventsJson.toString())),
+        ) { nowMs }
+
+        val snapshot = store.loadSnapshot(nowMs)
+
+        assertTrue("target" in snapshot.positiveTrackIds)
+        assertFalse("target" in snapshot.negativeTrackIds)
+        assertTrue("artist" in snapshot.positiveArtistKeys)
+        assertFalse("artist" in snapshot.negativeArtistKeys)
+    }
+
+    @Test
+    fun loadSnapshot_mildNegativeStopsAffectingRecommendationsAfterSevenDays() {
+        val nowMs = 1_000_000_000_000L
+        val eventsJson = JSONArray().apply {
+            put(
+                event(
+                    "old-skip",
+                    "old-artist",
+                    RadioFeedbackType.MILD_NEGATIVE,
+                    nowMs - RadioHistoryStore.MILD_NEGATIVE_EFFECTIVE_AGE_MS - 1L,
+                ),
+            )
+            put(
+                event(
+                    "recent-dislike",
+                    "recent-artist",
+                    RadioFeedbackType.STRONG_NEGATIVE,
+                    nowMs - RadioHistoryStore.MILD_NEGATIVE_EFFECTIVE_AGE_MS - 1L,
+                ),
+            )
+        }
+        val store = RadioHistoryStore(
+            FakeSharedPreferences(mutableMapOf(KEY_EVENTS to eventsJson.toString())),
+        ) { nowMs }
+
+        val snapshot = store.loadSnapshot(nowMs)
+
+        assertFalse("old-skip" in snapshot.negativeTrackIds)
+        assertFalse("old-artist" in snapshot.negativeArtistKeys)
+        assertFalse(snapshot.events.any { it.trackId == "old-skip" })
+        assertTrue("recent-dislike" in snapshot.negativeTrackIds)
+        assertTrue("recent-artist" in snapshot.negativeArtistKeys)
     }
 
     @Test
@@ -162,6 +215,30 @@ class RadioHistoryStoreTest {
         assertTrue("target" in snapshot.positiveTrackIds)
         assertFalse("target" in snapshot.negativeTrackIds)
         assertTrue("other" in snapshot.negativeTrackIds)
+    }
+
+    @Test
+    fun recordSeedExposure_rotatesAndBoundsSeedsAcrossSessions() {
+        val store = RadioHistoryStore(FakeSharedPreferences())
+
+        store.recordSeedExposure((1..6).map { "seed-$it" })
+        store.recordSeedExposure((7..10).map { "seed-$it" })
+        store.recordSeedExposure(listOf("seed-5", "seed-11"))
+
+        assertEquals(
+            listOf(
+                "seed-3",
+                "seed-4",
+                "seed-6",
+                "seed-7",
+                "seed-8",
+                "seed-9",
+                "seed-10",
+                "seed-5",
+                "seed-11",
+            ),
+            store.loadRecentSeedIds(),
+        )
     }
 
     private fun event(
